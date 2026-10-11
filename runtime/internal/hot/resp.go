@@ -8,6 +8,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -19,7 +20,14 @@ import (
 //
 // 支持：状态码 +、错误 -、整数 :、批量串 $、数组 *（含 nil）。
 // 不支持：内联命令、RESP3 的 map / set / push —— 用不到，不写。
+// mu 把「发一条命令 + 读它的回复」锁成一个原子操作。
+//
+// 一条连接上只能有一个来回：一条命令要写好几段（`*n` / `$len` / 正文），
+// bufio 只护得住每一段，护不住**一段序列** —— 两个调用交错写，对端读到的就是
+// 一条不存在的命令，真 redis 会当场断连（症状：short write，且从此读不到热层）。
+// 并发进来的调用在这一层排队：热层是本地一跳，串行不心疼，串包才是灾难。
 type respConn struct {
+	mu      sync.Mutex
 	rw      io.ReadWriteCloser
 	r       *bufio.Reader
 	w       *bufio.Writer
@@ -46,7 +54,11 @@ func newRespConn(rw io.ReadWriteCloser, timeout time.Duration) *respConn {
 func (rc *respConn) Close() error { return rc.rw.Close() }
 
 // do 发一条命令、读一个回复。每次调用都重设超时：一条卡住的命令不该把进程挂死。
+//
+// 整段（写 + 读）在锁里 —— 见 respConn.mu：少了这把锁，并发调用会互相串包。
 func (rc *respConn) do(args ...string) (any, error) {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
 	if d, ok := rc.rw.(deadlineSetter); ok {
 		_ = d.SetDeadline(time.Now().Add(rc.timeout))
 	}
