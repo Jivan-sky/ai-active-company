@@ -179,25 +179,25 @@
      灰刻意不许像绿：一个是「过了」，一个是「没人判过」，混了就等于把没判过的当过了。
      只有 warn 与 bad 呼吸（4.4s，幅度压在 3px 以内）—— 会动的信息才需要动；
      绿与灰一律静：它们没有「正在发生」的意思，动起来只会是噪音。 */
-  .dot { width: 10px; height: 10px; flex: none; border-radius: 50%; background: transparent; border: 1.5px dashed #93a3ba; }
-  .dot.ok { background: var(--green); border: 0; box-shadow: 0 0 0 1px var(--surface), 0 0 0 3px rgba(23, 146, 79, 0.22); }
+  .dot { width: 12px; height: 12px; flex: none; border-radius: 50%; background: transparent; border: 1.5px dashed var(--ink-3); }
+  .dot.ok { background: var(--green); border: 0; box-shadow: 0 0 0 3px rgba(23, 146, 79, 0.18); }
   .dot.warn {
     background: var(--amber); border: 0;
     animation: breathe-warn 4.4s ease-in-out infinite;
   }
   .dot.bad {
-    background: var(--red); border: 0; border-radius: 2.5px; transform: rotate(45deg);
+    background: var(--red); border: 0; border-radius: 3px; transform: rotate(45deg);
     animation: breathe-bad 4.4s ease-in-out infinite;
   }
   /* 灰档：status 是个认不出的词 —— 原样显示，不硬塞进三档里（形状同默认：空心虚线圈） */
-  .dot.gray { background: transparent; border: 1.5px dashed #93a3ba; box-shadow: none; animation: none; }
+  .dot.gray { background: transparent; border: 1.5px dashed var(--ink-3); box-shadow: none; animation: none; }
   @keyframes breathe-warn {
-    0%, 100% { box-shadow: 0 0 0 1px var(--surface), 0 0 0 3px rgba(217, 154, 26, 0.20); }
-    50%      { box-shadow: 0 0 0 1px var(--surface), 0 0 0 6px rgba(217, 154, 26, 0.30); }
+    0%, 100% { box-shadow: 0 0 0 3px rgba(217, 154, 26, 0.16); }
+    50%      { box-shadow: 0 0 0 6px rgba(217, 154, 26, 0.32); }
   }
   @keyframes breathe-bad {
-    0%, 100% { box-shadow: 0 0 0 1px var(--surface), 0 0 0 3px rgba(207, 59, 48, 0.00); }
-    50%      { box-shadow: 0 0 0 1px var(--surface), 0 0 0 6px rgba(207, 59, 48, 0.26); }
+    0%, 100% { box-shadow: 0 0 0 3px rgba(207, 59, 48, 0.16); }
+    50%      { box-shadow: 0 0 0 6px rgba(207, 59, 48, 0.34); }
   }
   /* 图例：把「形状 → 含义」摆出来，省得靠颜色猜 */
   .legend { display: flex; flex-wrap: wrap; gap: 10px 22px; margin: 14px 0 0; font-size: 12.5px; color: var(--ink-2); }
