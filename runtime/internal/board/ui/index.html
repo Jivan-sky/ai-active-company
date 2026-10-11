@@ -10,40 +10,58 @@
   这是看板的**外壳**：样式与骨架手写在这里，界面内容由 app.js（TS 构建产物）填。
   app.js 不是运行时依赖：它是构建期打出来的静态文件，随 anc 二进制一起嵌进去。
 
-  版式：左边一条固定的导航（哪些页、各自接没接数据源），右边是当前页。
+  版式：左边一条固定的导航（按「一个问题」分组），右边是当前页。
   导航用 <a href="#/id"> —— 浏览器原生 hash 路由，不写额外的路由器代码。
 
-  视觉语言（2026-10-10 改）：参照 Claude 的前端 —— **纸感而不是玻璃感**。
-  象牙底 + 发丝线 + 陶土色（clay）主色；不叠渐变、不做毛玻璃、不投阴影，
-  层次全靠 1px 线与留白撑。数字用衬线体（等宽数字看着像后台，衬线看着像读本）。
+  视觉语言（2026-10-11 改）：冷调纸底 + 蓝调柔影 + 衬线标题。
+    底 #f1f4f9 不是纯白；层次靠「同一个蓝基调（#243e6b）的低透明阴影」撑，
+    卡片再叠一层 `0 1px 0 #fff9 inset` 内高光 —— 换成灰黑硬影，整页立刻掉档。
+    主色只有一个蓝（#2d74d2），暖橙 #e07529 只做点缀。
+    类名一个没改：`.glass` `.card` `.chip` `.dot` `.tab` … 都是 app.js 认的契约。
+
+  动效预算（看板是天天看的工具，不是落地页，所以**分层**）：
+    可动      —— 导航、空态、加载、状态灯的呼吸（只有「在动」的黄与「要人管」的红呼吸，绿和灰一律静）
+    只进一次  —— 换页时每节内容的进场（blur-fade），不循环
+    一律静    —— 表格、时间线、队列这些数据区
+    硬约束：同视口同时循环的动效 ≤ 2 个；氛围件周期 ≥ 3.6s；不做快闪。
+    系统开了「减少动态效果」时全部关掉（@media prefers-reduced-motion）。
 -->
 <style>
   :root {
-    /* 纸：页面底与卡片面是同一族暖白，靠一条发丝线分层，不靠灰阶差 */
-    --paper: #faf9f5;
-    --paper-2: #f3f1ea;
-    --surface: #ffffff;
-    --surface-2: #f7f6f1;
+    /* 纸：冷调纸底。面不是纯白 —— 纯白在这个底上会「浮」起来 */
+    --paper: #f1f4f9;
+    --paper-2: #e9eff6;
+    --surface: #fcfcfd;
+    --surface-2: #e8ecf3;
 
-    /* 墨：暖黑，不用纯黑（纯黑在暖底上发蓝） */
-    --ink: #191917;
-    --ink-2: #57544e;
-    --ink-3: #8c8a83;
+    /* 墨：偏蓝的深墨，不用纯黑（纯黑在冷底上发死） */
+    --ink: #152033;
+    --ink-2: #2e3d56;
+    --ink-3: #566781;
 
-    /* 发丝线：整页的层次都由它和留白给 */
-    --line: #e6e4db;
-    --line-2: #edebe3;
+    /* 线：发丝线，整页层次主要靠它和留白 */
+    --line: #cfd9e6;
+    --line-2: #dee5ef;
 
-    /* Claude 的主色：陶土（clay）。蓝绿只做辅色，不抢 */
-    --clay: #d97757;
-    --clay-2: #c2603f;
-    --blue: #6a9bcc;
-    --green: #6b8e4e;
-    --amber: #bd8420;
-    --red: #b23a2c;
+    /* 主色只有一个蓝；暖色只做点缀 */
+    --accent: #2d74d2;
+    --accent-2: #2266bf;
+    --accent-3: #184eaa;
+    --accent-soft: #dce9f9;
+    --warm: #e07529;
+
+    /* 三档语义色：形状 + 颜色一起变（色盲、灰度截图、小屏都分得开） */
+    --green: #17924f;
+    --amber: #d99a1a;
+    --red: #cf3b30;
 
     --radius: 12px;
     --radius-lg: 16px;
+
+    /* 影：一律取同一个蓝基调的低透明变体 —— 这是「不像后台」的关键一步 */
+    --shadow-card: 0 1px 0 #ffffff inset, 0 22px 48px -26px #243e6b40;
+    --shadow-soft: 0 10px 24px -18px #243e6b52;
+
     --ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "PingFang SC",
           "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
     --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Times New Roman",
@@ -59,12 +77,13 @@
     background: var(--paper);
     background-attachment: fixed;
   }
-  /* .glass 这个名字留着不改 —— 它现在是「一块纸面」：白底 + 一条发丝线。
+  /* .glass 这个名字留着不改 —— 它现在是「一块纸面」：面 + 发丝线 + 蓝调柔影 + 内高光。
      （前端骨架里的类名是 app.js 认的契约，改名要连构建产物一起改。） */
   .glass {
     background: var(--surface);
     border: 1px solid var(--line);
     border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-card);
   }
   main { display: block; }
   .shell {
@@ -78,7 +97,7 @@
   }
   .col { min-width: 0; }
 
-  /* 左侧导航：比正文底色深半档的象牙，右侧一条发丝线收边 */
+  /* 左侧导航：比正文底深半档的冷白，按「一个问题」分组 */
   .rail {
     position: sticky;
     top: 28px;
@@ -86,30 +105,55 @@
     background: var(--paper-2);
     border-color: var(--line);
     border-radius: var(--radius-lg);
+    box-shadow: none;
   }
   .brandbox { padding: 2px 9px 12px; border-bottom: 1px solid var(--line); }
-  .brandbox .mark { font-size: 11px; font-weight: 650; letter-spacing: 2.1px; color: var(--clay); }
+  .brandbox .mark { font-size: 11px; font-weight: 650; letter-spacing: 2.1px; color: var(--accent); }
   .brandbox .co { margin-top: 8px; font-size: 15.5px; font-weight: 620; line-height: 1.34; letter-spacing: -0.1px; }
   .brandbox .sub { margin-top: 4px; font-size: 11.5px; color: var(--ink-3); line-height: 1.5; }
-  .tabs { margin-top: 12px; display: flex; flex-direction: column; gap: 2px; }
+  .tabs { margin-top: 10px; display: flex; flex-direction: column; gap: 0; }
+  /* 分组：组的标题是**问题**，不是名词 —— 「现在」「组织」「记录」「运行」「原料」 */
+  .navgroup { margin-top: 10px; }
+  .navgroup:first-child { margin-top: 4px; }
+  .navgroup > .glabel {
+    padding: 0 11px 5px; font-family: var(--mono); font-size: 10px; letter-spacing: 0.15em;
+    text-transform: uppercase; color: var(--ink-3);
+  }
+  .navgroup > .gitems { display: flex; flex-direction: column; gap: 2px; }
   .tab {
     display: flex; align-items: center; justify-content: space-between; gap: 8px;
     padding: 8px 11px; border-radius: 9px; text-decoration: none;
     color: var(--ink-2); font-size: 13.5px; border: 1px solid transparent;
   }
-  .tab:hover { background: rgba(255, 255, 255, 0.7); text-decoration: none; color: var(--ink); }
+  .tab:hover { background: rgba(255, 255, 255, 0.72); text-decoration: none; color: var(--ink); }
   .tab.active {
     background: var(--surface); color: var(--ink); font-weight: 620;
-    border-color: var(--line);
+    border-color: var(--line); box-shadow: var(--shadow-soft);
   }
   .res { font-size: 10.5px; padding: 2px 7px; border-radius: 999px; white-space: nowrap; flex: none; }
-  .res.on { color: #40632c; background: rgba(107, 142, 78, 0.13); }
-  .res.off { color: var(--ink-3); background: rgba(25, 25, 23, 0.055); }
+  .res.on { color: #1d5ea8; background: rgba(45, 116, 210, 0.12); }
+  .res.off { color: var(--ink-3); background: rgba(21, 32, 51, 0.055); }
 
-  /* 页头 */
-  header.top { padding: 18px 24px; display: flex; gap: 18px; align-items: center; flex-wrap: wrap; }
-  header.top .q h1 { margin: 0; font-size: 19.5px; font-weight: 640; letter-spacing: -0.25px; }
+  /* 页头：整页的焦点卡，所以光跑边只给它一处 */
+  header.top { padding: 18px 24px; display: flex; gap: 18px; align-items: center; flex-wrap: wrap; position: relative; }
+  header.top::before {
+    content: ""; position: absolute; inset: -1px; border-radius: inherit; padding: 1px; pointer-events: none;
+    background: conic-gradient(from var(--beam-angle), transparent 0deg, transparent 218deg,
+      #9ec6fa 262deg, #2d74d2 300deg, #184eaa 322deg, transparent 360deg);
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor; mask-composite: exclude;
+    animation: beam 6s linear infinite;
+  }
+  header.top .q h1 {
+    margin: 0; font-family: var(--serif); font-size: 21.5px; font-weight: 600; letter-spacing: -0.3px;
+  }
   header.top .q .ask { margin: 5px 0 0; font-size: 13px; color: var(--ink-2); }
+  /* 换页时页名揭示一次（遮罩从左往右拉出来 + 上移 8px）。刷新不算换页，所以刷新时不放。 */
+  header.top .q h1.sweep { animation: mask-sweep 0.65s cubic-bezier(0.22, 1, 0.36, 1) both; }
+  @keyframes mask-sweep {
+    0%   { clip-path: inset(0 100% 0 0); transform: translateY(8px); }
+    100% { clip-path: inset(0);          transform: translateY(0); }
+  }
   .spacer { flex: 1 1 120px; }
   .meta { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
 
@@ -124,27 +168,47 @@
     padding: 6px 15px; border-radius: 10px; border: 1px solid var(--line);
     background: var(--surface);
   }
-  button.refresh:hover { background: var(--surface-2); border-color: #dcd9cf; }
+  button.refresh:hover { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-3); }
   button.refresh:disabled { opacity: 0.45; cursor: default; }
 
   /* 状态灯：四个档**形状 + 颜色**一起变，不靠色深 —— 色盲、灰度截图、小屏都分得开。
      ok   = 实心圆       —— 好，已经过去了
-     warn = 带光环的圆   —— 运行中（那圈光晕就是「在动」）
+     warn = 带光环的圆   —— 运行中（那圈光晕在呼吸，就是「在动」）
      bad  = 菱形         —— 停 / 坏，形状和另外三个最不一样
      gray = 空心虚线圈   —— 认不出的词，**没人判过**
      灰刻意不许像绿：一个是「过了」，一个是「没人判过」，混了就等于把没判过的当过了。
-     配色跟着 Claude 那套走：绿是橄榄、黄是赭石、红是砖红，都压掉一点饱和度 ——
-     在白纸上它们仍然分得开，但不像告警灯那样刺眼。 */
-  .dot { width: 10px; height: 10px; flex: none; border-radius: 50%; background: transparent; border: 1.5px dashed #a8a49a; }
-  .dot.ok { background: var(--green); border: 0; box-shadow: 0 0 0 1px #fff, 0 0 0 2.5px rgba(107, 142, 78, 0.20); }
-  .dot.warn { background: var(--amber); border: 0; box-shadow: 0 0 0 1px #fff, 0 0 0 4px rgba(189, 132, 32, 0.22); }
-  .dot.bad { background: var(--red); border: 0; border-radius: 2.5px; transform: rotate(45deg); box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.9); }
+     只有 warn 与 bad 呼吸（4.4s，幅度压在 3px 以内）—— 会动的信息才需要动；
+     绿与灰一律静：它们没有「正在发生」的意思，动起来只会是噪音。 */
+  .dot { width: 10px; height: 10px; flex: none; border-radius: 50%; background: transparent; border: 1.5px dashed #93a3ba; }
+  .dot.ok { background: var(--green); border: 0; box-shadow: 0 0 0 1px var(--surface), 0 0 0 3px rgba(23, 146, 79, 0.22); }
+  .dot.warn {
+    background: var(--amber); border: 0;
+    animation: breathe-warn 4.4s ease-in-out infinite;
+  }
+  .dot.bad {
+    background: var(--red); border: 0; border-radius: 2.5px; transform: rotate(45deg);
+    animation: breathe-bad 4.4s ease-in-out infinite;
+  }
   /* 灰档：status 是个认不出的词 —— 原样显示，不硬塞进三档里（形状同默认：空心虚线圈） */
-  .dot.gray { background: transparent; border: 1.5px dashed #a8a49a; box-shadow: none; }
+  .dot.gray { background: transparent; border: 1.5px dashed #93a3ba; box-shadow: none; animation: none; }
+  @keyframes breathe-warn {
+    0%, 100% { box-shadow: 0 0 0 1px var(--surface), 0 0 0 3px rgba(217, 154, 26, 0.20); }
+    50%      { box-shadow: 0 0 0 1px var(--surface), 0 0 0 6px rgba(217, 154, 26, 0.30); }
+  }
+  @keyframes breathe-bad {
+    0%, 100% { box-shadow: 0 0 0 1px var(--surface), 0 0 0 3px rgba(207, 59, 48, 0.00); }
+    50%      { box-shadow: 0 0 0 1px var(--surface), 0 0 0 6px rgba(207, 59, 48, 0.26); }
+  }
   /* 图例：把「形状 → 含义」摆出来，省得靠颜色猜 */
   .legend { display: flex; flex-wrap: wrap; gap: 10px 22px; margin: 14px 0 0; font-size: 12.5px; color: var(--ink-2); }
 
   section { margin-top: 20px; padding: 20px 24px 24px; }
+  /* 进场：换页时每节进一次（blur-fade），不循环。同视口并发的循环动效因此只有状态灯那两处。 */
+  section.reveal { animation: rise 0.8s cubic-bezier(0.16, 1, 0.3, 1) both; }
+  @keyframes rise {
+    0%   { opacity: 0; transform: translateY(20px); filter: blur(6px); }
+    100% { opacity: 1; transform: translateY(0);    filter: blur(0); }
+  }
   section > h2 {
     margin: 0 0 2px; font-size: 15px; font-weight: 630; letter-spacing: 0.1px;
     display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
@@ -156,24 +220,25 @@
     padding: 16px 17px; border-radius: var(--radius);
     background: var(--surface);
     border: 1px solid var(--line);
+    box-shadow: 0 1px 0 #ffffff inset, 0 12px 26px -22px #243e6b3d;
   }
   .card h3 { margin: 0 0 8px; font-size: 15px; font-weight: 620; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .card dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; font-size: 13px; }
   .card dt { color: var(--ink-3); white-space: nowrap; }
   .card dd { margin: 0; color: var(--ink-2); overflow-wrap: anywhere; }
   /* 数字用衬线体：等宽体读起来像后台日志，衬线体读起来像报告 */
-  .card.stat { background: var(--surface-2); }
+  .card.stat { background: var(--surface-2); box-shadow: none; }
   .card.stat .n { font-family: var(--serif); font-size: 30px; font-weight: 600; letter-spacing: -0.5px; line-height: 1.14; font-variant-numeric: lining-nums tabular-nums; }
   .card.stat .k { font-size: 13px; color: var(--ink-2); margin-top: 3px; }
   .card.stat .sub { font-size: 11.5px; color: var(--ink-3); margin-top: 1px; }
-  .cannot { color: var(--clay-2); }
+  .cannot { color: var(--accent-3); }
   /* 状态点 + 文字：.dot 是固定宽高，得靠 inline-flex 才撑得开 */
   .st { display: inline-flex; align-items: center; gap: 8px; }
   /* 时间线页：一个 case 一个原生 <details> 折叠（不写 JS），summary 里点 + 字一行排 */
   details { margin-top: 12px; }
   details > summary { cursor: pointer; padding: 7px 2px; }
   details > summary .st { flex-wrap: wrap; }
-  details > summary:hover { color: var(--clay-2); }
+  details > summary:hover { color: var(--accent-2); }
 
   .tw { overflow-x: auto; margin-top: 16px; }
   .tw > table { margin-top: 0; }
@@ -182,17 +247,27 @@
   td { overflow-wrap: anywhere; }
   th { color: var(--ink-3); font-weight: 560; font-size: 12px; white-space: nowrap; letter-spacing: 0.2px; }
   tbody tr:last-child td { border-bottom: none; }
-  a { color: var(--clay-2); text-decoration: none; }
+  a { color: var(--accent-2); text-decoration: none; }
   a:hover { text-decoration: underline; }
+
+  /* 翻页：长列表不许一次全铺出来。页码进 hash（可分享、刷新还在这一页）。 */
+  .pager { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line-2); }
+  a.pg {
+    font: inherit; font-size: 13px; color: var(--ink); cursor: pointer; text-decoration: none;
+    padding: 6px 14px; border-radius: 9px; border: 1px solid var(--line); background: var(--surface);
+  }
+  a.pg:hover { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-3); text-decoration: none; }
+  a.pg[aria-disabled="true"] { opacity: 0.38; pointer-events: none; }
+  .pgind { font-family: var(--mono); font-size: 12px; color: var(--ink-3); }
 
   .banner { margin-top: 20px; padding: 16px 20px; border-radius: var(--radius); font-size: 13.5px; }
   .banner h3 { margin: 0 0 8px; font-size: 14px; font-weight: 620; }
   .banner ul { margin: 0; padding-left: 20px; }
   .banner li { margin: 3px 0; }
-  .banner.bad { background: #fdf4f1; border: 1px solid #eed3c9; color: #7d3226; }
-  .banner.warn { background: #fdf8ed; border: 1px solid #ecdcbd; color: #6f5215; }
-  /* 点头回执：三档色的第四档，橄榄那一族（绿档已经用它，这里只是把 banner 补全） */
-  .banner.ok { background: #f4f8ef; border: 1px solid #d9e5cd; color: #40632c; }
+  .banner.bad { background: #fdf3f1; border: 1px solid #f0d3cc; color: #8a3026; }
+  .banner.warn { background: #fdf7ea; border: 1px solid #ebd9b2; color: #6d4f10; }
+  /* 点头回执：三档色的第四档，绿那一族（绿档已经用它，这里只是把 banner 补全） */
+  .banner.ok { background: #f1f8f4; border: 1px solid #cde5d8; color: #1d6647; }
 
   /* 待批页：全站唯一能写的地方。输入框与按钮都按纸感来 —— 不用实心蓝按钮那一套。 */
   .field { margin-top: 12px; }
@@ -203,7 +278,7 @@
   }
   input.by { width: 100%; max-width: 420px; }
   input.by:focus, input.why:focus {
-    outline: 2px solid rgba(217, 119, 87, 0.28); outline-offset: 1px; border-color: var(--clay);
+    outline: 2px solid rgba(45, 116, 210, 0.28); outline-offset: 1px; border-color: var(--accent);
   }
   .grid.props { grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); }
   .card.prop .body {
@@ -218,24 +293,49 @@
     padding: 7px 14px; border-radius: 10px; border: 1px solid var(--line);
     background: var(--surface); color: var(--ink);
   }
-  button.act:hover { background: var(--surface-2); border-color: #dcd9cf; }
+  button.act:hover { background: var(--surface-2); border-color: #c3d0e2; }
   button.act:disabled { opacity: 0.45; cursor: default; }
   /* 三个信号的配色跟着状态灯走；认不出的信号照点，只是不上色 */
-  button.act.approve { color: #40632c; border-color: #cfdfbe; background: #f6faf1; }
-  button.act.reject { color: #7d3226; border-color: #eed3c9; background: #fdf4f1; }
-  button.act.hold { color: #6f5215; border-color: #ecdcbd; background: #fdf8ed; }
+  button.act.approve { color: #1d6647; border-color: #cde5d8; background: #f1f8f4; }
+  button.act.reject { color: #8a3026; border-color: #f0d3cc; background: #fdf3f1; }
+  button.act.hold { color: #6d4f10; border-color: #ebd9b2; background: #fdf7ea; }
   .empty { color: var(--ink-3); font-size: 13px; margin: 14px 0 0; }
   .pad { padding: 20px 24px; }
   footer { margin-top: 26px; color: var(--ink-3); font-size: 12.5px; line-height: 1.95; }
   footer strong { color: var(--ink-2); font-weight: 560; }
   .loading { color: var(--ink-3); }
 
+  /* 加载骨架：扫光一次 + 呼吸。看板是本地读盘，多半一闪而过 —— 但慢盘上它比一行字诚实。 */
+  .sk { height: 13px; border-radius: 6px; background: var(--surface-2); position: relative; overflow: hidden;
+        animation: sk-breath 3.6s ease-in-out infinite; }
+  .sk + .sk { margin-top: 10px; }
+  .sk::after {
+    content: ""; position: absolute; inset: 0; transform: translateX(-100%);
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.75), transparent);
+    animation: sk-sweep 1.4s cubic-bezier(0.16, 1, 0.3, 1) 50ms forwards;
+  }
+  @keyframes sk-breath { 0%, 100% { opacity: 1; } 50% { opacity: 0.62; } }
+  @keyframes sk-sweep { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }
+
+  /* 光跑边：一个 @property 角度从 0 转到 360deg 驱动 conic-gradient。
+     浏览器不支持 @property 时退化成静态渐变（不报错、不闪），所以可以放心用。 */
+  @property --beam-angle { syntax: "<angle>"; initial-value: 0deg; inherits: false; }
+  @keyframes beam { to { --beam-angle: 360deg; } }
+
   @media (max-width: 900px) {
     .shell { grid-template-columns: minmax(0, 1fr); }
     .rail { position: static; }
     .brandbox { border-bottom: none; padding-bottom: 0; }
-    .tabs { flex-direction: row; overflow-x: auto; padding-bottom: 3px; }
+    .tabs { flex-direction: row; overflow-x: auto; padding-bottom: 3px; gap: 10px; }
+    .navgroup { margin-top: 0; display: flex; align-items: center; gap: 6px; }
+    .navgroup > .glabel { display: none; }
+    .navgroup > .gitems { flex-direction: row; gap: 2px; }
     .tab { flex: none; gap: 6px; }
+  }
+  /* 系统开了「减少动态效果」：氛围件与进场全关。状态灯的形状与颜色不变，所以信息一条没丢。 */
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+    header.top::before { background: none; }
   }
 </style>
 </head>

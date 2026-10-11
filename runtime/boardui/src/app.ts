@@ -8,7 +8,9 @@
 //   2. 不猜、不补：哪块没有数据源就写清楚「还没接入」，不编假数据把界面填满；
 //   3. 几乎只读：唯一的写口是「待批」页的点头（一次留痕，不动真相源）—— 其余全是读；
 //   4. 一页只回答一个问题 —— 那句问题写在页头（Page.question），写不出来就该先想清楚再开页；
-//   5. 数据源没接通的页面，导航上直接标「未接入」，不靠人点进去才发现。
+//   5. 数据源没接通的页面，导航上直接标「未接入」，不靠人点进去才发现；
+//   6. 动效分层：换页才进一次场、只有「在动 / 要人管」的状态灯呼吸，数据区一律静 ——
+//      看板是天天看的工具，不是落地页（样式与动效预算写在 index.html 顶上）。
 //
 // 构建：`npm run build`（esbuild 打成 app.js，随 anc 二进制一起嵌进去）。
 
@@ -311,8 +313,10 @@ async function fetchData(): Promise<Data> {
     getJSON<RuntimeView>("/api/runtime"),
     getJSON<DataflowView>("/api/dataflow"),
     getJSON<AssetsView>("/api/assets"),
-    getJSON<TimelineView>("/api/timeline"),
-    getJSON<AuditView>("/api/audit"),
+    // 长列表按接口给的上限一次取回（timeline 上限 200 / audit 上限 500），翻页在视图里切。
+    // 不这么取的话，翻页每翻一页要重取一次，而这一页只看得到 20 行 —— 划不来。
+    getJSON<TimelineView>("/api/timeline?limit=200"),
+    getJSON<AuditView>("/api/audit?limit=500"),
     getJSON<ApprovalView>("/api/approvals"),
   ]);
   const issues = issuesRes.body ?? emptyIssues(issuesRes.err);
@@ -481,6 +485,7 @@ function routingSection(v: BoardView): Kid {
 type Page = {
   id: string;
   label: string;
+  group: string;   // 导航里的分组：组的标题是**问题**（现在/组织/记录/运行/原料），不是名词
   question: string;
   wired: boolean;
   view: (d: Data) => Kid[];
@@ -968,7 +973,8 @@ function renderTimeline(d: Data): Kid[] {
       statCard(String(v.entries), "流水条数", "折叠成 " + v.total + " 个 case")),
     bandLegend()));
 
-  const rows: Kid[][] = v.cases.map((c) => [
+  const tl = sliced(v.cases, hashQuery());
+  const rows: Kid[][] = tl.rows.map((c) => [
     dotLine(bandDot(c.band), statusCell(c.status)),
     el("div", {}, el("span", { class: "mono" }, dash(c.key)), el("div", {}, dash(c.title))),
     handOff(c.by, c.to),
@@ -977,12 +983,16 @@ function renderTimeline(d: Data): Kid[] {
     localTime(c.last_at),
   ]);
   out.push(section("每个 case 现在在哪一步",
-    "取最后一条当当前态 —— 它写着「遇到了什么、走到了哪一步、这一步是谁的决定」",
-    v.cases.length === 0
+    "取最后一条当当前态 —— 它写着「遇到了什么、走到了哪一步、这一步是谁的决定」"
+      + (v.cases.length > PER_PAGE
+        ? "（共 " + v.cases.length + " 个 · 这一屏第 " + tl.cur + " / " + tl.pages + " 页）" : ""),
+    tl.rows.length === 0
       ? emptyNote("时间线还是空的（`timeline/` 里一行都没有）。空不是错 —— 「还没开始记」是个真实状态。")
-      : table(["档 / status", "case", "谁 → 交给谁", "业务域 · 项目", "几条", "最近活动"], rows)));
+      : el("div", {},
+          table(["档 / status", "case", "谁 → 交给谁", "业务域 · 项目", "几条", "最近活动"], rows),
+          pager(v.cases.length, tl.cur, "timeline"))));
 
-  const steps: Kid[] = v.cases.map((c) => {
+  const steps: Kid[] = tl.rows.map((c) => {
     const head: Kid[] = [
       el("span", { class: bandDot(c.band) }),
       el("span", { class: "mono" }, dash(c.key)), " ",
@@ -1005,7 +1015,8 @@ function renderTimeline(d: Data): Kid[] {
   });
   if (steps.length > 0) {
     out.push(section("每一步都留着",
-      "每个 case 带最近几步（最新在上）；完整流水在 `timeline/*.jsonl` 里 —— 一行都没删",
+      "每个 case 带最近几步（最新在上）；完整流水在 `timeline/*.jsonl` 里 —— 一行都没删"
+        + (v.cases.length > PER_PAGE ? "（跟上面那张表同一页）" : ""),
       ...steps));
   }
 
@@ -1094,7 +1105,8 @@ function renderAudit(d: Data): Kid[] {
       statCard(String(v.scopes.vault), "vault 内 · 非域", "结构目录 / 还没划域"),
       statCard(String(v.scopes.unknown), "判不出", "目标抽不出（Bash 这类）", "dot gray"))));
 
-  const rows: Kid[][] = v.records.map((e) => [
+  const au = sliced(v.records, hashQuery());
+  const rows: Kid[][] = au.rows.map((e) => [
     dotLine(auditDot(e.band), el("span", {}, auditWord(e.band))),
     localTime(e.at),
     el("span", { class: "mono" }, dash(e.actor)),
@@ -1105,14 +1117,19 @@ function renderAudit(d: Data): Kid[] {
       e.has_why ? el("span", { class: "chip" }, "原话见 CLI") : ""),
   ]);
   out.push(section("流水（最新在上）",
-    "共 " + v.total + " 条，这一页铺 " + v.records.length + " 条。完整流水在 audit/*.jsonl 里 —— 一行一条，一行都没删。" +
+    "共 " + v.total + " 条，看板手上 " + v.records.length + " 条。完整流水在 audit/*.jsonl 里 —— 一行一条，一行都没删。" +
     "原话（工具结果 / 命令行）不带到看板：它是本机排查资料、夹着本机路径，要看用 anc audit log",
-    v.records.length === 0
+    au.rows.length === 0
       ? emptyNote("审计还是空的（audit/ 里一行都没有）。跑 anc audit collect <vault> --write 从 harness 记录归集，" +
         "或用 anc audit add 补记一条。空不是错 —— 「还没有行使」是个真实状态。")
-      : table(["结果", "何时", "谁", "类别", "对谁", "目标（+ 原话）"], rows)));
+      : el("div", {},
+          table(["结果", "何时", "谁", "类别", "对谁", "目标（+ 原话）"], rows),
+          pager(v.records.length, au.cur, "audit"))));
 
-  const flagged = v.records.filter((e) => e.band === "denied" || e.band === "failed");
+  // 被拦下/失败是一个**横切视图**（不是主流水的一段），所以它自己不分页：
+  // 列前 PER_PAGE 条，超出的写清去哪儿看，不假装这就是全部。
+  const flaggedAll = v.records.filter((e) => e.band === "denied" || e.band === "failed");
+  const flagged = flaggedAll.slice(0, PER_PAGE);
   if (flagged.length > 0) {
     out.push(section("被拦下的与失败的",
       "这两类要分开读：denied = 权没给（去查授权，不是查故障）；failed = 真的执行失败（去查环境）。" +
@@ -1129,7 +1146,11 @@ function renderAudit(d: Data): Kid[] {
           zoneCell(e),
           el("div", {}, el("span", { class: "mono" }, dash(e.object)),
             e.has_why ? el("span", { class: "chip" }, "原话见 CLI") : ""),
-        ]))));
+        ])),
+      flaggedAll.length > flagged.length
+        ? el("p", { class: "empty" }, "这里只列前 " + PER_PAGE + " 条（共 " + flaggedAll.length +
+            " 条）—— 完整的用 anc audit log <vault> --result denied")
+        : ""));
   }
 
   if (v.total > v.records.length) {
@@ -1151,44 +1172,44 @@ function renderAudit(d: Data): Kid[] {
 // 审计 —— 读者：管理者 / 关心「谁碰了什么」的人。排在「时间线」后面：
 // 一个讲「人怎么说的」，一个讲「机器记下来的是什么」。
 const auditPage: Page = {
-  id: "audit", label: "审计", wired: true,
+  id: "audit", group: "记录", label: "审计", wired: true,
   question: "谁在什么时候、对谁、行使了什么（含被拒的）？", view: renderAudit,
 };
 // 时间线 —— 读者：跟进的人 / 老板。它排在「项目」后面：一个讲「有哪几件事」，一个讲「卡在哪一步」。
 const timelinePage: Page = {
-  id: "timeline", label: "时间线", wired: true,
+  id: "timeline", group: "记录", label: "时间线", wired: true,
   question: "卡在哪、谁在跟、下一步是谁的决定？", view: renderTimeline,
 };
 const overviewPage: Page = {
-  id: "overview", label: "总览", wired: true,
+  id: "overview", group: "现在", label: "总览", wired: true,
   question: "现在有没有事？", view: renderOverview,
 };
 // 待批 —— 读者：该点头的人。它是全看板唯一能写的一页，所以排在最靠前：
 // 整块看板只有它等着人动手，而「有没有卡在等我」正是「现在有没有事」的下一句。
 const approvalsPage: Page = {
-  id: "approvals", label: "待批", wired: true,
+  id: "approvals", group: "现在", label: "待批", wired: true,
   question: "哪几件事在等人点头、该谁点？", view: renderApprovals,
 };
 const orgPage: Page = {
-  id: "org", label: "组织", wired: true,
+  id: "org", group: "组织", label: "组织", wired: true,
   question: "公司长什么样、边界在哪？", view: renderOrg,
 };
 const projectsPage: Page = {
-  id: "projects", label: "项目", wired: true,
+  id: "projects", group: "组织", label: "项目", wired: true,
   question: "谁在做什么、到几号、卡住找谁？", view: renderProjects,
 };
 const runtimePage: Page = {
-  id: "runtime", label: "运行态", wired: true,
+  id: "runtime", group: "运行", label: "运行态", wired: true,
   question: "每个 bot 活着吗、真的能回话吗？", view: renderRuntime,
 };
 const dataflowPage: Page = {
-  id: "dataflow", label: "数据流", wired: true,
+  id: "dataflow", group: "运行", label: "数据流", wired: true,
   question: "谁可以做什么、通道开着吗？", view: renderDataflow,
 };
 // 页名还叫「沉淀」（那是这一块最终要回答的），但这一页现在只答得了「原料有哪些」——
 // 所以问题句按**现在真答得了**的写，不按以后的写。口径差在哪，页内写清了。
 const assetsPage: Page = {
-  id: "assets", label: "沉淀", wired: true,
+  id: "assets", group: "原料", label: "沉淀", wired: true,
   question: "原料有哪些、多久没动了？", view: renderAssets,
 };
 
@@ -1200,7 +1221,50 @@ function pageFor(id: string): Page {
 }
 
 function currentId(): string {
-  return location.hash.replace(/^#\/?/, "").trim();
+  return location.hash.replace(/^#\/?/, "").split("?")[0]!.trim();
+}
+
+// hash 里的参数（`#/timeline?p=2`）—— 翻页状态进 URL：刷新、前进后退、把链接发给别人，
+// 都还停在那一页。不引入路由器，也不引入第二份状态。
+function hashQuery(): URLSearchParams {
+  const i = location.hash.indexOf("?");
+  return new URLSearchParams(i < 0 ? "" : location.hash.slice(i + 1));
+}
+
+const pageNo = (q: URLSearchParams, key = "p"): number => {
+  const n = Number.parseInt((q.get(key) ?? "").trim(), 10);
+  return Number.isFinite(n) && n > 0 ? n : 1;
+};
+
+// 一屏铺多少行。翻页是**视图**的事，不是门禁 —— 取多少由 limit 决定（见 fetchData），
+// 翻页只决定这一屏铺哪一段。所以这里不拦任何人，也不改变任何接口的语义。
+const PER_PAGE = 20;
+
+// 翻页条：只有一页就**不出现**（少一行噪音），越界自动夹回第一页（不报错、不假装有第 9 页）。
+function pager(total: number, page: number, id: string): Kid {
+  const pages = Math.max(1, Math.ceil(total / PER_PAGE));
+  if (pages <= 1) return "";
+  const cur = Math.min(Math.max(page, 1), pages);
+  const step = (target: number, label: string, off: boolean): HTMLElement => {
+    const a = el("a", { class: "pg", href: "#/" + id + "?p=" + String(target) }, label);
+    if (off) {
+      a.removeAttribute("href");
+      a.setAttribute("aria-disabled", "true");
+    }
+    return a;
+  };
+  return el("div", { class: "pager" },
+    step(cur - 1, "‹ 上一页", cur <= 1),
+    el("span", { class: "pgind" },
+      "第 " + cur + " / " + pages + " 页 · 每页 " + PER_PAGE + " · 共 " + total),
+    step(cur + 1, "下一页 ›", cur >= pages));
+}
+
+// 把一份长列表切成当前这一屏，并夹住页号。
+function sliced<T>(list: T[], q: URLSearchParams): { rows: T[]; cur: number; pages: number } {
+  const pages = Math.max(1, Math.ceil(list.length / PER_PAGE));
+  const cur = Math.min(pageNo(q), pages);
+  return { rows: list.slice((cur - 1) * PER_PAGE, cur * PER_PAGE), cur, pages };
 }
 
 // ---------- 外壳与路由 ----------
@@ -1231,12 +1295,21 @@ function rail(page: Page, d: Data | null): HTMLElement {
     el("div", { class: "co" }, c ? dash(c.name) : "还没读到投影"),
     el("div", { class: "sub" },
       c ? dash(c.platform) + " · " + dash(c.language) + " · " + dash(c.timezone) : "—"));
+  // 分组：组的标题是问题本身，页名才是答案。PAGES 的顺序就是分组顺序 —— 加页只要写对 group。
   const tabs = el("nav", { class: "tabs" });
+  let group = "";
+  let items = el("div", { class: "gitems" });
   for (const p of PAGES) {
-    tabs.append(el("a", { class: p.id === page.id ? "tab active" : "tab", href: "#/" + p.id },
+    if (p.group !== group) {
+      if (group !== "") tabs.append(el("div", { class: "navgroup" }, el("div", { class: "glabel" }, group), items));
+      group = p.group;
+      items = el("div", { class: "gitems" });
+    }
+    items.append(el("a", { class: p.id === page.id ? "tab active" : "tab", href: "#/" + p.id },
       el("span", { class: "lab" }, p.label),
       el("span", { class: p.wired ? "res on" : "res off" }, p.wired ? "已接入" : "未接入")));
   }
+  if (group !== "") tabs.append(el("div", { class: "navgroup" }, el("div", { class: "glabel" }, group), items));
   return el("aside", { class: "rail glass" }, brand, tabs);
 }
 
@@ -1251,17 +1324,37 @@ function footer(): HTMLElement {
       "：一页回答一个问题。还没接数据源的页如实写明缺什么、依赖哪个议题，不编数据。"));
 }
 
+// 上一屏是哪一页 —— 用它决定要不要放进场动效。**刷新不算换页**（刷新时不动）：
+// 看板是天天看的工具，每次重取都全屏重播一遍进场，很快就变成噪音。
+let lastPageId = "";
+
 function shell(): void {
   if (!root) return;
   const page = pageFor(currentId());
   const d = cache;
+  const entering = d !== null && page.id !== lastPageId;
   const col = el("div", { class: "col" });
   col.append(topbar(d, page));
   if (!d) {
-    col.append(el("div", { class: "glass pad loading" }, "正在读取真相源…"));
+    col.append(el("div", { class: "glass pad" },
+      el("div", { class: "loading", style: "font-size:12.5px;margin-bottom:14px" }, "正在读取真相源…"),
+      el("div", { class: "sk", style: "width:58%" }),
+      el("div", { class: "sk", style: "width:82%" }),
+      el("div", { class: "sk", style: "width:44%" })));
   } else {
     for (const kid of page.view(d)) col.append(kid);
     col.append(footer());
+    lastPageId = page.id;
+  }
+  // 进场：换页时每节各进一次，错峰 ≤ 0.3s（动效预算：只进，不循环）。
+  // 翻页不触发 —— 那还是同一页，动起来只会让人以为「换了内容」。
+  if (entering) {
+    const h1 = col.querySelector("header.top h1");
+    if (h1) h1.classList.add("sweep");
+    Array.from(col.querySelectorAll("section")).forEach((sec, i) => {
+      sec.classList.add("reveal");
+      (sec as HTMLElement).style.animationDelay = String(Math.min(i, 5) * 0.06) + "s";
+    });
   }
   document.title = page.label + " · " + (d && d.board ? dash(d.board.company.name) : "ANC 看板");
   root.replaceChildren(el("div", { class: "shell" }, rail(page, d), col));
