@@ -200,7 +200,7 @@ function table(headers: string[], rows: Kid[][]): HTMLElement {
 function section(title: string, hint: string, ...body: Kid[]): HTMLElement {
   const h = el("h2", {}, title);
   if (hint !== "") h.append(el("span", { class: "hint" }, hint));
-  return el("section", { class: "glass" }, h, ...body);
+  return el("section", { class: "sec" }, h, ...body);
 }
 
 function banner(kind: "bad" | "warn", title: string, items: Kid[]): HTMLElement {
@@ -386,7 +386,7 @@ function statCard(n: string, k: string, sub: string, dot?: string): HTMLElement 
 function statSection(v: BoardView): Kid {
   const active = v.members.filter((m) => !m.disabled).length;
   return section("规模", "全部由真相源现算，不缓存、不猜",
-    el("div", { class: "grid stats" },
+    el("div", { class: "figs" },
       statCard(String(v.domains.length), "业务域", "一块业务一行"),
       statCard(String(v.projects.length), "项目", "在做的事"),
       statCard(String(v.roles.length), "角色", "岗位"),
@@ -688,10 +688,11 @@ function renderAssets(d: Data): Kid[] {
   const out: Kid[] = [];
   if ((v.error ?? "") !== "") out.push(banner("bad", "真相源读不动", [el("span", {}, dash(v.error))]));
   out.push(banner("warn", "这是原料，不是沉淀", [el("span", {}, dash(v.note))]));
+  out.push(sedimentSection(d));
 
   const total = v.dirs.reduce((n, x) => n + x.files, 0);
   out.push(section("规模", "真相源里那张「数据路由」表的一行一行，加上它底下现在有多少东西",
-    el("div", { class: "grid stats" },
+    el("div", { class: "figs" },
       statCard(String(v.dirs.length), "数据目录", "顶层"),
       statCard(String(total), "原料文件", "全部加起来"),
       statCard(String(v.charters), "立项书副本", "真源在客户侧"))));
@@ -964,7 +965,7 @@ function renderTimeline(d: Data): Kid[] {
 
   out.push(section("三档",
     "只按 status 配色，形状跟档走：done=实心圆 / running=带光环的圆 / blocked·failed=菱形 / 认不出的词=空心虚线圈（原样留着，不吞）",
-    el("div", { class: "grid stats" },
+    el("div", { class: "figs" },
       statCard(String(v.counts.green), "绿 · 已完成", "status=done", "dot ok"),
       statCard(String(v.counts.yellow), "黄 · 运行中", "status=running", "dot warn"),
       statCard(String(v.counts.red), "红 · 卡点 / 失败", "blocked · failed", "dot bad"),
@@ -1087,7 +1088,7 @@ function renderAudit(d: Data): Kid[] {
 
   out.push(section("结果四档",
     "只按 result 分形状：ok=实心圆 / denied=菱形（被拦下）/ failed=菱形（真失败）/ 认不出的词=空心虚线圈（原样留着，不吞）",
-    el("div", { class: "grid stats" },
+    el("div", { class: "figs" },
       statCard(String(v.bands.ok), "绿 · 成功", "result=ok", "dot ok"),
       statCard(String(v.bands.denied), "红 · 被拦下", "result=denied", "dot bad"),
       statCard(String(v.bands.failed), "红 · 失败", "result=failed", "dot bad"),
@@ -1096,7 +1097,7 @@ function renderAudit(d: Data): Kid[] {
 
   out.push(section("这次行使跨出去没有",
     "「跨域」按 SPEC §6 的严格含义用：域与域之间。域外与 vault 内非域目录不叫跨域 —— 它们各自是独立的信号",
-    el("div", { class: "grid stats" },
+    el("div", { class: "figs" },
       statCard(String(v.scopes.domain), "域内", "目标落在某个业务域"),
       statCard(String(v.scopes.cross), "⚠ 跨域", "目标域不是自己的",
         v.scopes.cross > 0 ? "dot bad" : "dot ok"),
@@ -1134,7 +1135,7 @@ function renderAudit(d: Data): Kid[] {
     out.push(section("被拦下的与失败的",
       "这两类要分开读：denied = 权没给（去查授权，不是查故障）；failed = 真的执行失败（去查环境）。" +
       "原话不带到看板，要看用 anc audit log <vault> --result denied",
-      el("div", { class: "grid stats" },
+      el("div", { class: "figs" },
         statCard(String(v.bands.denied), "被拦下", "权没给 —— 查授权，不是查故障", "dot bad"),
         statCard(String(v.bands.failed), "失败", "真执行失败 —— 查环境", "dot bad")),
       table(["结果", "何时", "谁", "类别", "对谁", "目标（+ 原话）"],
@@ -1210,9 +1211,154 @@ const dataflowPage: Page = {
 // 所以问题句按**现在真答得了**的写，不按以后的写。口径差在哪，页内写清了。
 const assetsPage: Page = {
   id: "assets", group: "原料", label: "沉淀", wired: true,
-  question: "原料有哪些、多久没动了？", view: renderAssets,
+  question: "手上有什么料、沉淀到哪一层了？", view: renderAssets,
 };
 
+// ---------- 沉淀柱（口径图） ----------
+//
+// 「沉淀」页那根柱**不是统计**，它画的是四层的分工：
+//   料落进来 → 重复与噪声在「丢掉」那一层当场散掉（所以那一层不增厚）
+//            → 还在发生的事住「热层」（带保鲜期，过期自己碎掉，所以它便宜）
+//            → 达标的落「库」变成经验（落下的就是资产，永久）
+//            → 里面夹的明文，在落库之前被抹成指针（原文件改名，指针指向真源）
+//
+// 每层右边写的是**真数**：能对上的才写数，对不上的如实写「未接入」——
+// 不拿动画冒充数据。同一批料的落点每次刷新都一样（固定种子），可复现才可校对。
+const MASK_MARK = "已脱敏";
+
+// 审计里「读出来就已经被抹过」的条数 —— 「隐匿」那一层唯一能对上的真数。
+// 它从流水原文里数出来，不是估的；一条都没有就照写 0。
+function maskedCount(v: AuditView | null): number | null {
+  if (!v) return null;
+  let n = 0;
+  for (const r of v.records) {
+    const text = (r.why ?? "") + " " + (r.detail ?? "") + " " + (r.object ?? "");
+    if (text.indexOf(MASK_MARK) >= 0) n++;
+  }
+  return n;
+}
+
+// 一批料（固定的一批，不是随机的）：每一颗是一个**类别**，不是一个数。
+type SedKind = "live" | "dead" | "masked" | "settled";
+type SedToken = { kind: SedKind; band: string; label: string };
+
+const SED_TOKENS: SedToken[] = [
+  { kind: "live",    band: "hot",   label: "session · 一轮对话" },
+  { kind: "dead",    band: "noise", label: "repeat · 重复的话" },
+  { kind: "live",    band: "hot",   label: "decision · 一个决定" },
+  { kind: "dead",    band: "noise", label: "noise · 没写完的半句" },
+  { kind: "masked",  band: "mask",  label: "明文 · 一把 key" },
+  { kind: "settled", band: "cold",  label: "经验 · 沉下来的" },
+  { kind: "live",    band: "hot",   label: "case · 一个卡点" },
+  { kind: "dead",    band: "noise", label: "repeat · 重复的话" },
+  { kind: "settled", band: "cold",  label: "立项书 · 副本" },
+  { kind: "masked",  band: "mask",  label: "明文 · 一份凭据" },
+];
+
+// 一颗料的宽度：按字数现算（中文比西文宽近一倍），不写死 px —— 改字不用改样式。
+function tokenWidth(s: string): number {
+  let w = 18;
+  for (const ch of s) w += ch.charCodeAt(0) > 0x2e80 ? 9.6 : 5.4;
+  return Math.round(w);
+}
+
+// 图例一行：色块 + 名字 + 一句话 + **真数**（右边的数就是这个图层现在的实况）。
+function sedRow(sw: string, name: string, n: string, text: string): HTMLElement {
+  return el("div", { class: "li" },
+    el("span", { class: "sw " + sw }),
+    el("div", {}, el("b", {}, name), el("p", {}, text)),
+    el("div", { class: "n" }, n));
+}
+
+function sedimentSection(d: Data): Kid {
+  const a = d.assets;
+  const files = a ? a.dirs.reduce((n, x) => n + x.files, 0) : null;
+  const dirs = a ? a.dirs.length : null;
+  const charters = a ? a.charters : null;
+  const masked = maskedCount(d.audit);
+  const num = (v: number | null): string => (v === null ? "读不到" : String(v));
+  const no = "未接入";
+
+  const band = (key: string, cls: string, label: string, cnt: string, note: string): HTMLElement =>
+    el("div", { class: "strata " + cls, "data-band": key },
+      el("div", { class: "lbl" }, label),
+      el("div", { class: "cnt" }, cnt),
+      el("div", { class: "note" }, note));
+
+  const column = el("div", { class: "column" },
+    band("open", "s-open", "料口", "", "会话与文件都从这落进来"),
+    band("noise", "s-noise", "丢掉", no, "重复、噪声、没写完的半句"),
+    band("hot", "s-hot", "热层 · 缓存", no, "还在发生的事，带保鲜期"),
+    band("cold", "s-cold", "落库 · 经验", num(files) + " 个文件", "达标才落，落下的就是资产"),
+    band("mask", "s-mask", "隐匿 · 指针", num(masked) + " 条", "明文不落库：落库前抹成指针"),
+    el("div", { class: "stream" }));
+
+  const legend = el("div", { class: "legendbox" },
+    el("div", { class: "card" },
+      sedRow("w-noise", "丢掉", no, "重复、噪声、没写完的半句 —— 当场蒸发，不进任何一层"),
+      sedRow("w-hot", "热层 · 缓存", no, "还在发生的事。带保鲜期，过期自己碎掉 —— 所以它便宜"),
+      sedRow("w-cold", "落库 · 经验", num(files),
+        "达标了才落。落下的这一条就是资产，永久（本机 " + num(dirs) + " 个目录 · 立项书副本 " + num(charters) + "）"),
+      sedRow("w-mask", "隐匿 · 指针", num(masked),
+        "明文不落库：落盘前抹成「" + MASK_MARK + ":规则名」的指针，原文件改名归档")));
+
+  return section("沉淀柱", "口径图，不是统计 · 一层比一层更贵、更少、更不该丢",
+    el("div", { class: "sedi" }, column, legend),
+    el("p", { class: "note" },
+      "柱是「口径图」—— 它画的是四层的分工，不是统计；层右边的数是真数，对不上的两格如实写「未接入」。",
+      "热层要 Redis 连上才有数（本机没起），所以那一层现在是空的 —— 这一条不编。"));
+}
+
+// 落料：柱子插进 DOM 之后再算落点（层高是按布局量出来的，不是写死的数）。
+// 减少动态效果时直接摆到那一层上：不落，但一层不缺。
+function paintSediment(scope: HTMLElement): void {
+  const column = scope.querySelector(".column");
+  if (!(column instanceof HTMLElement)) return;
+  const bands = new Map<string, HTMLElement>();
+  column.querySelectorAll<HTMLElement>(".strata").forEach((s) => {
+    const k = s.getAttribute("data-band");
+    if (k !== null) bands.set(k, s);
+  });
+  const stream = column.querySelector(".stream");
+  if (!(stream instanceof HTMLElement)) return;
+  const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  let seed = 20261012;
+  const rnd = (): number => {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    return seed / 0x7fffffff;
+  };
+  // 落点：左边那段留给层的字，右边按格子排（同一层不叠）
+  const left = 196;
+  const usable = Math.max(120, column.clientWidth - left - 84);
+  const seat = new Map<string, number>();
+  SED_TOKENS.forEach((t, i) => {
+    const at = bands.get(t.band);
+    if (!at) return;
+    const n = seat.get(t.band) ?? 0;
+    seat.set(t.band, n + 1);
+    const top = at.offsetTop;
+    const dead = t.band === "noise";
+    const mask = t.kind === "masked";
+    const row = dead ? 0 : Math.floor(n / 2);
+    const col = dead ? 0 : n % 2;
+    const y = dead
+      ? top + 26 + rnd() * 22
+      : Math.min(top + 40 + row * 28, top + at.offsetHeight - 26);
+    const tk = el("div",
+      { class: "tk" + (dead ? " dead" : "") + (mask ? " masked" : "") + (still ? " still" : "") },
+      el("span", { class: "txt" }, t.label),
+      mask ? el("span", { class: "ptr" }, "→ 指针 · 飞书") : "");
+    tk.style.setProperty("--x", (left + col * (usable / 2) + (dead ? rnd() * 40 : 0)).toFixed(0) + "px");
+    tk.style.setProperty("--w1", tokenWidth(t.label) + "px");
+    tk.style.setProperty("--w2", tokenWidth("→ 指针 · 飞书") + "px");
+    tk.style.setProperty("--to", y.toFixed(0) + "px");
+    tk.style.setProperty("--mid", (top + 6 + rnd() * 24).toFixed(0) + "px");
+    tk.style.setProperty("--dur", (1.45 + rnd() * 0.6).toFixed(2) + "s");
+    tk.style.setProperty("--d", (i * 0.1).toFixed(2) + "s");
+    tk.style.setProperty("--g", (i * 0.1 + 0.84).toFixed(2) + "s");
+    stream.append(tk);
+  });
+}
 const PAGES: Page[] = [overviewPage, approvalsPage, orgPage, projectsPage, timelinePage, auditPage, runtimePage, dataflowPage, assetsPage];
 
 function pageFor(id: string): Page {
@@ -1275,26 +1421,31 @@ function refreshButton(): HTMLElement {
   return b;
 }
 
-function topbar(d: Data | null, page: Page): HTMLElement {
+function topline(d: Data | null, page: Page): HTMLElement {
   const i = d ? d.issues : null;
+  const c = d && d.board ? d.board.company : null;
   const meta = el("div", { class: "meta" },
     i ? el("span", { class: "chip" }, el("span", { class: statusDot(i) }), statusText(i)) : "",
     d && d.board ? chip("生成 " + localTime(d.board.generated_at)) : "",
     d && d.board ? chip("schema " + d.board.schema, true) : "",
     refreshButton());
-  return el("header", { class: "top glass" },
-    el("div", { class: "q" }, el("h1", {}, page.label), el("p", { class: "ask" }, page.question)),
+  return el("div", { class: "topline" },
+    el("div", { class: "brandrow" },
+      el("span", { class: "glyph" }),
+      el("span", { class: "nm" }, "ANC"),
+      el("span", { class: "rule" }),
+      el("span", { class: "co" }, c ? dash(c.name) : "还没读到投影",
+        c ? el("span", { class: "sub" }, dash(c.platform) + " · " + dash(c.language) + " · " + dash(c.timezone)) : "")),
     el("div", { class: "spacer" }),
     meta);
 }
 
-function rail(page: Page, d: Data | null): HTMLElement {
-  const c = d && d.board ? d.board.company : null;
-  const brand = el("div", { class: "brandbox" },
-    el("div", { class: "mark" }, "ANC"),
-    el("div", { class: "co" }, c ? dash(c.name) : "还没读到投影"),
-    el("div", { class: "sub" },
-      c ? dash(c.platform) + " · " + dash(c.language) + " · " + dash(c.timezone) : "—"));
+// 页头：整页唯一的大字。它只问那一句话，答案在下面几节里。
+function hero(page: Page): HTMLElement {
+  return el("section", { class: "hero" }, el("h1", {}, page.label), el("p", { class: "ask" }, page.question));
+}
+
+function rail(page: Page): HTMLElement {
   // 分组：组的标题是问题本身，页名才是答案。PAGES 的顺序就是分组顺序 —— 加页只要写对 group。
   const tabs = el("nav", { class: "tabs" });
   let group = "";
@@ -1310,7 +1461,7 @@ function rail(page: Page, d: Data | null): HTMLElement {
       el("span", { class: p.wired ? "res on" : "res off" }, p.wired ? "已接入" : "未接入")));
   }
   if (group !== "") tabs.append(el("div", { class: "navgroup" }, el("div", { class: "glabel" }, group), items));
-  return el("aside", { class: "rail glass" }, brand, tabs);
+  return el("aside", { class: "rail" }, tabs);
 }
 
 function footer(): HTMLElement {
@@ -1334,7 +1485,7 @@ function shell(): void {
   const d = cache;
   const entering = d !== null && page.id !== lastPageId;
   const col = el("div", { class: "col" });
-  col.append(topbar(d, page));
+  col.append(hero(page));
   if (!d) {
     col.append(el("div", { class: "glass pad" },
       el("div", { class: "loading", style: "font-size:12.5px;margin-bottom:14px" }, "正在读取真相源…"),
@@ -1357,7 +1508,11 @@ function shell(): void {
     });
   }
   document.title = page.label + " · " + (d && d.board ? dash(d.board.company.name) : "ANC 看板");
-  root.replaceChildren(el("div", { class: "shell" }, rail(page, d), col));
+  root.replaceChildren(el("div", { class: "wrap" },
+    topline(d, page),
+    el("div", { class: "shell" }, rail(page), col)));
+  // 沉淀柱：进这一页时落一次，落定就不再动。刷新不算换页 —— 那是同一屏，不该重播。
+  if (entering) paintSediment(col);
 }
 
 let cache: Data | null = null;
