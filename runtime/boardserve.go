@@ -115,10 +115,11 @@ func cmdBoardServe(args []string) int {
 		Addr:   firstNonEmpty(*hotAddr, os.Getenv("ANC_HOT_ADDR"), hot.DefaultAddr),
 		Prefix: firstNonEmpty(*hotPrefix, os.Getenv("ANC_HOT_PREFIX")),
 	}); err != nil {
-		fmt.Fprintf(os.Stderr, "注意：热层没接上（%v）—— 「待批」页会如实报没接上。\n", err)
+		fmt.Fprintf(os.Stderr, "注意：热层没接上（%v）—— 「待批」与「沉淀」两页都会如实报没接上。\n", err)
 	} else {
 		defer st.Close()
 		bs.Approvals = st
+		bs.Hot = st
 	}
 
 	fmt.Printf("ANC 看板已起（默认只读）：\n")

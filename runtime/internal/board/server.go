@@ -36,6 +36,11 @@ type Server struct {
 	// Approvals 是待批队列（热层）。nil = 没接上：`/api/approvals` 如实回 wired=false，
 	// 写口也拒绝服务 —— 没有队列就没有地方落痕，绝不假装点头成功。
 	Approvals approvals.Queue
+
+	// Hot 是热层的**整体**视角（`/api/hot`，沉淀页用）。nil = 没接上，如实回 wired=false。
+	// 与 Approvals 是同一个底层对象、问的是另一件事 —— 所以单开一个字段，
+	// 不把「这一层现在什么情况」硬塞进 approvals.Queue 那个队列接口。
+	Hot HotLayer
 }
 
 func (s *Server) now() time.Time {
@@ -56,6 +61,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/timeline", s.handleTimeline)
 	mux.HandleFunc("/api/audit", s.handleAudit)
 	mux.HandleFunc("/api/approvals", s.handleApprovals)
+	mux.HandleFunc("/api/hot", s.handleHot)
 	mux.HandleFunc(WritePath, s.handleApprovalsDecide)
 	mux.Handle("/", http.FileServerFS(UIFS()))
 	return readOnly(mux)

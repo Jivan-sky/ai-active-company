@@ -140,8 +140,22 @@ type DecideReply = {
 };
 
 // 一次取数、全程共用：已接入的页吃的是同一份投影，切页不重新打网络（按「刷新」才重取）。
+// 热层（`/api/hot`，schema = anc.hot/v1）—— 「热层里现在住着什么」。
+// 与 `/api/approvals` 是同一份底层数据、两个问题：那是**队列**（等谁点头），这是**这一层本身**。
+// wired=false 与 total=0 是两件事，所以两个字段都在（同 approvals 的口径）。
+type HotEntryView = {
+  id: string; status: string; title: string; by?: string; to?: string;
+  as_of?: string; age_secs?: number; stale: boolean;
+};
+type HotView = {
+  schema: string; wired: boolean; why?: string; error?: string;
+  ttl_secs: number; stale_after_secs: number;
+  total: number; stale: number; entries: HotEntryView[]; note: string;
+};
+
 type Data = {
   board: BoardView | null; issues: Issues;
+  hot: HotView | null; hotErr: string;
   runtime: RuntimeView | null; runtimeErr: string;
   dataflow: DataflowView | null; dataflowErr: string;
   assets: AssetsView | null; assetsErr: string;
@@ -307,7 +321,7 @@ function contract<T extends { schema?: string }>(res: Fetched<T>, label: string)
 }
 
 async function fetchData(): Promise<Data> {
-  const [boardRes, issuesRes, runtimeRes, dataflowRes, assetsRes, timelineRes, auditRes, approvalsRes] = await Promise.all([
+  const [boardRes, issuesRes, runtimeRes, dataflowRes, assetsRes, timelineRes, auditRes, approvalsRes, hotRes] = await Promise.all([
     getJSON<BoardView & { error?: string }>("/api/board"),
     getJSON<Issues>("/api/issues"),
     getJSON<RuntimeView>("/api/runtime"),
@@ -318,6 +332,7 @@ async function fetchData(): Promise<Data> {
     getJSON<TimelineView>("/api/timeline?limit=200"),
     getJSON<AuditView>("/api/audit?limit=500"),
     getJSON<ApprovalView>("/api/approvals"),
+    getJSON<HotView>("/api/hot"),
   ]);
   const issues = issuesRes.body ?? emptyIssues(issuesRes.err);
   const rt = contract(runtimeRes, "运行态");
@@ -326,10 +341,12 @@ async function fetchData(): Promise<Data> {
   const tl = contract(timelineRes, "时间线");
   const au = contract(auditRes, "审计");
   const ap = contract(approvalsRes, "待批队列");
+  const ho = contract(hotRes, "热层");
   const schema = boardRes.body?.schema;
   if (boardRes.body && typeof schema === "string" && schema !== "") {
     return {
       board: boardRes.body, issues, err: "",
+      hot: ho.v, hotErr: ho.err,
       runtime: rt.v, runtimeErr: rt.err,
       dataflow: df.v, dataflowErr: df.err,
       assets: as.v, assetsErr: as.err,
@@ -341,6 +358,7 @@ async function fetchData(): Promise<Data> {
   const why = boardRes.body?.error ?? boardRes.err ?? ("看板数据读取失败（HTTP " + boardRes.status + "）");
   return {
     board: null, issues, err: why,
+    hot: ho.v, hotErr: ho.err,
     runtime: rt.v, runtimeErr: rt.err,
     dataflow: df.v, dataflowErr: df.err,
     assets: as.v, assetsErr: as.err,
@@ -754,6 +772,16 @@ function sinceText(iso: string): string {
   const hrs = Math.floor(mins / 60);
   if (hrs < 24) return hrs + " 小时前";
   return Math.floor(hrs / 24) + " 天前";
+}
+
+// 秒数说人话：保鲜期与「多久没动算不新鲜」这两个阈值都由服务端给（/api/hot），
+// 前端不另立一份口径，只负责把秒数翻成看得懂的写法。0 = 不失效。
+function durText(secs: number): string {
+  if (secs <= 0) return "永久";
+  if (secs % 86400 === 0) return secs / 86400 + " 天";
+  if (secs % 3600 === 0) return secs / 3600 + " 小时";
+  if (secs % 60 === 0) return secs / 60 + " 分钟";
+  return secs + " 秒";
 }
 
 function receiptBanner(r: DecideReply): HTMLElement {
@@ -1278,6 +1306,34 @@ function sedimentSection(d: Data): Kid {
   const masked = maskedCount(d.audit);
   const num = (v: number | null): string => (v === null ? "读不到" : String(v));
   const no = "未接入";
+  // 热层那一格。三个条件缺一个都问不出「有几条」：接口回了 / 接上了 / 读得动。
+  // 缺一个就如实写「未接入」或「读不到」—— **0 会被读成「热层是空的」**，那是在编。
+  const h = d.hot;
+  const hotCnt = (): string => {
+    const v = d.hot;
+    if (v === null || !v.wired) return no;
+    if ((v.error ?? "") !== "") return "读不到";
+    return num(v.total) + " 条";
+  };
+  const hotBandNote = (): string => {
+    if (!h) return "还在发生的事，带保鲜期";
+    if (!h.wired) return "没接上 —— 读不到，不等于里面是空的";
+    if ((h.error ?? "") !== "") return "接上了，但这会儿读不动";
+    return h.stale > 0 ? "还在发生的事；" + h.stale + " 条不新鲜" : "还在发生的事，带保鲜期";
+  };
+  const hotText = (): string => {
+    const base = "还在发生的事。带保鲜期，过期自己碎掉 —— 所以它便宜";
+    if (!h) return base;
+    if (!h.wired) return base + "（" + (h.why ?? "") + "）";
+    if ((h.error ?? "") !== "") return base + "（" + h.error + "）";
+    return base + "（保鲜期 " + durText(h.ttl_secs) + " · 超过 " + durText(h.stale_after_secs) + " 没动就标不新鲜）";
+  };
+  const hotFoot = (): string => {
+    if (!h) return "热层那一格没问出来：" + (d.hotErr === "" ? "服务没回 anc.hot/v1" : d.hotErr) + "。";
+    if (!h.wired) return (h.why ?? "热层没接上") + "。所以那一格是「未接入」—— 它不等于「热层是空的」。";
+    if ((h.error ?? "") !== "") return "热层接上了，但这会儿读不动：" + h.error + "。";
+    return "热层那一格的数来自 /api/hot：现在 " + num(h.total) + " 条，其中 " + h.stale + " 条不新鲜。";
+  };
 
   const band = (key: string, cls: string, label: string, cnt: string, note: string): HTMLElement =>
     el("div", { class: "strata " + cls, "data-band": key },
@@ -1288,7 +1344,7 @@ function sedimentSection(d: Data): Kid {
   const column = el("div", { class: "column" },
     band("open", "s-open", "料口", "", "会话与文件都从这落进来"),
     band("noise", "s-noise", "丢掉", no, "重复、噪声、没写完的半句"),
-    band("hot", "s-hot", "热层 · 缓存", no, "还在发生的事，带保鲜期"),
+    band("hot", "s-hot", "热层 · 缓存", hotCnt(), hotBandNote()),
     band("cold", "s-cold", "落库 · 经验", num(files) + " 个文件", "达标才落，落下的就是资产"),
     band("mask", "s-mask", "隐匿 · 指针", num(masked) + " 条", "明文不落库：落库前抹成指针"),
     el("div", { class: "stream" }));
@@ -1296,7 +1352,7 @@ function sedimentSection(d: Data): Kid {
   const legend = el("div", { class: "legendbox" },
     el("div", { class: "card" },
       sedRow("w-noise", "丢掉", no, "重复、噪声、没写完的半句 —— 当场蒸发，不进任何一层"),
-      sedRow("w-hot", "热层 · 缓存", no, "还在发生的事。带保鲜期，过期自己碎掉 —— 所以它便宜"),
+      sedRow("w-hot", "热层 · 缓存", hotCnt(), hotText()),
       sedRow("w-cold", "落库 · 经验", num(files),
         "达标了才落。落下的这一条就是资产，永久（本机 " + num(dirs) + " 个目录 · 立项书副本 " + num(charters) + "）"),
       sedRow("w-mask", "隐匿 · 指针", num(masked),
@@ -1305,8 +1361,9 @@ function sedimentSection(d: Data): Kid {
   return section("沉淀柱", "口径图，不是统计 · 一层比一层更贵、更少、更不该丢",
     el("div", { class: "sedi" }, column, legend),
     el("p", { class: "note" },
-      "柱是「口径图」—— 它画的是四层的分工，不是统计；层右边的数是真数，对不上的两格如实写「未接入」。",
-      "热层要 Redis 连上才有数（本机没起），所以那一层现在是空的 —— 这一条不编。"));
+      "柱是「口径图」—— 它画的是四层的分工，不是统计；层右边那一格是真数，读不到就写「未接入」或「读不到」，不拿空列表冒充「里面是空的」。",
+      hotFoot(),
+      "「丢掉」那一格没有数据源 —— 丢弃发生在写入之前，落盘里不留痕迹；四层分法拍板之后再接。"));
 }
 
 // 落料：柱子插进 DOM 之后再算落点（层高是按布局量出来的，不是写死的数）。
