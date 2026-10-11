@@ -3,6 +3,7 @@ package board
 import (
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"net/http"
 	"strings"
 	"time"
@@ -41,6 +42,15 @@ type Server struct {
 	// 与 Approvals 是同一个底层对象、问的是另一件事 —— 所以单开一个字段，
 	// 不把「这一层现在什么情况」硬塞进 approvals.Queue 那个队列接口。
 	Hot HotLayer
+
+	// UIFS 是前端静态资源的**根**。nil = 用内嵌的那份（默认）。
+	//
+	// 内嵌是默认，不是唯一：现场想换一份前端（改样式、临时补一页、拿真机产物核界面）
+	// 不该被逼着重编译 —— 给了它（CLI 上是 `anc board serve --ui-dir <目录>`）就用外部那份。
+	// **可覆盖 ≠ 拆掉默认**：不给它时行为一个字节都没变。
+	//
+	// 它只换「前端文件从哪来」，不动 HTTP 面的契约（路由、只读口径、端点还是那些）。
+	UIFS fs.FS
 }
 
 func (s *Server) now() time.Time {
@@ -63,7 +73,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/approvals", s.handleApprovals)
 	mux.HandleFunc("/api/hot", s.handleHot)
 	mux.HandleFunc(WritePath, s.handleApprovalsDecide)
-	mux.Handle("/", http.FileServerFS(UIFS()))
+	ui := s.UIFS
+	if ui == nil {
+		ui = UIFS()
+	}
+	mux.Handle("/", http.FileServerFS(ui))
 	return readOnly(mux)
 }
 

@@ -147,6 +147,43 @@ func TestServerServesUI(t *testing.T) {
 	}
 }
 
+// 前端默认走内嵌；`--ui-dir` 那份能**盖过**内嵌 —— 但默认没被拆掉（默认那条见 TestServerServesUI）。
+//
+// 覆盖是**替换**不是叠加：外面目录里没有的文件，不该从内嵌那份里漏出来。
+func TestServerUIOverride(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 记号用「外部前端」：断言赢的是外面这份，而不是「内容恰好一样」。
+	write("index.html", "<!doctype html><html><body>外部前端</body></html>")
+	write("app.js", "// 外部前端\n"+strings.Repeat("// 占位\n", 400)+"// /api/board\n")
+
+	h := (&Server{
+		Vault: fixturePath(t, "domains"),
+		Now:   func() time.Time { return fixedNow },
+		UIFS:  os.DirFS(dir),
+	}).Handler()
+
+	if rec := get(t, h, "/"); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "外部前端") {
+		t.Fatalf("首页没走外部那份（状态码 %d）：%s", rec.Code, rec.Body.String())
+	}
+	if rec := get(t, h, "/app.js"); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "外部前端") {
+		t.Fatalf("/app.js 没走外部那份（状态码 %d）", rec.Code)
+	}
+	// 内嵌里有、外面没有：不该漏出来。
+	if rec := get(t, h, "/favicon.svg"); rec.Code == http.StatusOK {
+		t.Fatalf("/favicon.svg 居然 200 —— 覆盖是替换，不该叠加内嵌那份")
+	}
+	// 换前端不动 HTTP 面的契约：投影端点照旧。
+	if rec := get(t, h, "/api/board"); rec.Code != http.StatusOK {
+		t.Fatalf("/api/board 状态码 %d —— 换前端不该动端点", rec.Code)
+	}
+}
+
 // 内嵌文件系统不外泄：包外的路径取不到。
 func TestServerDoesNotServeOutsideAssets(t *testing.T) {
 	for _, p := range []string{"/../go.mod", "/../../README.md", "/ui/../server.go"} {

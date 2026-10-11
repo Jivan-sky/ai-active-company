@@ -19,6 +19,11 @@ func TestBoardServeArgs(t *testing.T) {
 		{"位置参数多了", []string{"a", "b"}, 2},
 		{"addr 缺值", []string{"--addr"}, 2},
 		{"vault 不存在", []string{filepath.Join(t.TempDir(), "没有这个目录")}, 1},
+		// vault 是好的，只有 --ui-dir 写错：照样别起服务（起一个打开只会 404 前端的服务是骗人）。
+		{"ui-dir 不是目录", []string{
+			filepath.Join("testdata", "orgs", "domains"),
+			"--ui-dir", filepath.Join(t.TempDir(), "没有这个目录"),
+		}, 1},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

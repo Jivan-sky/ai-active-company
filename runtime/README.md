@@ -28,8 +28,10 @@ anc org init ./climax-vault --client 某车队 --id climax --members alice,bob
 anc org check ./climax-vault --rules
 anc render ./climax-vault --apply
 
-# 6. 起只读看板（本地；前端已嵌在二进制里 —— 不需要 node、不需要外网）
+# 6. 起只读看板（本地；前端默认**已嵌在二进制里** —— 不需要 node、不需要外网）
 anc board serve ./climax-vault          # http://127.0.0.1:8787
+# 现场要换一份前端（改样式、临时补一页、拿真机产物核界面）就指过去，不必重编译：
+# anc board serve ./climax-vault --ui-dir ./我的前端
 
 # 7. 装载：渲染 + 校验 + 装上游 daemon + 凭据桥 + 重启 + 回读（默认 dry-run，--apply 才真做）
 anc apply ./climax-vault
@@ -271,9 +273,13 @@ anc org export <vault>            # stdout 出一份 JSON，消费方自己重�
 
 ```
 anc board serve <vault> [--addr 127.0.0.1:8787] [--data <data 目录>] [--hot-addr 127.0.0.1:6379]
+                        [--ui-dir <前端目录>]
 ```
 
 一个**几乎只读**的本地看板（唯一的写口是「待批」页的点头，见下）。**分页，不挤一页** —— 一页只回答一个问题，那句问题就写在页头：
+
+前端**默认**用嵌在二进制里的那份（一个 exe 就起来）；`--ui-dir` 指到磁盘上的一份就**覆盖**它。
+覆盖是替换不是叠加，且只换「前端文件从哪来」—— 路由、只读口径、端点一个都不动。目录写错直接退。
 
 | 页 | 回答什么 | 读者 | 数据源 | 现状 |
 |---|---|---|---|---|
