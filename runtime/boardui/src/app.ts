@@ -1310,8 +1310,9 @@ function sedimentSection(d: Data): Kid {
 }
 
 // 落料：柱子插进 DOM 之后再算落点（层高是按布局量出来的，不是写死的数）。
-// 减少动态效果时直接摆到那一层上：不落，但一层不缺。
-function paintSediment(scope: HTMLElement): void {
+// motion=false 时（重取数据后重画）直接把料摆到那一层上：不落，但一层不缺 ——
+// 刷新不该把柱子刷空，也不该把同一屏重播一遍。
+function paintSediment(scope: HTMLElement, motion: boolean): void {
   const column = scope.querySelector(".column");
   if (!(column instanceof HTMLElement)) return;
   const bands = new Map<string, HTMLElement>();
@@ -1321,7 +1322,7 @@ function paintSediment(scope: HTMLElement): void {
   });
   const stream = column.querySelector(".stream");
   if (!(stream instanceof HTMLElement)) return;
-  const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const still = !motion || window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   let seed = 20261012;
   const rnd = (): number => {
     seed = (seed * 1103515245 + 12345) & 0x7fffffff;
@@ -1511,8 +1512,8 @@ function shell(): void {
   root.replaceChildren(el("div", { class: "wrap" },
     topline(d, page),
     el("div", { class: "shell" }, rail(page), col)));
-  // 沉淀柱：进这一页时落一次，落定就不再动。刷新不算换页 —— 那是同一屏，不该重播。
-  if (entering) paintSediment(col);
+  // 沉淀柱：进这一页时落一次（落定就停住）；重取数据后重画只是把料摆回那一层上，不再播一遍。
+  if (col.querySelector(".column")) paintSediment(col, entering);
 }
 
 let cache: Data | null = null;
