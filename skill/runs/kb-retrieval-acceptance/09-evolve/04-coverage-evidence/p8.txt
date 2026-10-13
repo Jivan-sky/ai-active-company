@@ -1,0 +1,82 @@
+skill_calls=1
+  skill_input={"skill": "kb-retrieval-acceptance"}
+
+文件/命令访问记录(19 条):
+  Bash:{"command": "ls -la <干净工作目录> 2>/dev/null | head -50", "description": "List working directory contents"}
+  Read:{"file_path": "<干净工作目录>/probe.py"}
+  Read:{"file_path": "<干净工作目录>/probe2.py"}
+  Bash:{"command": "ls -la <沙箱>/ 2>/dev/null | head -60; echo \"=== .kb files ===\"; ls -la <沙箱>/.kb* <沙箱>/.jwt 2>/d
+  Bash:{"command": "cd <沙箱> 2>/dev/null && find . -maxdepth 3 -type d -not -path '*/node_modules/*' -not -path '*/.git/*' 2>/dev/null | head -60", "de
+  Bash:{"command": "ls -la <沙箱>/corpus/ <沙箱>/work-clean/ <沙箱>/work/eval-out/ 2>/dev/null", "description": "List corp
+  Read:{"file_path": "<沙箱>/ask.py"}
+  Bash:{"command": "for f in <沙箱>/corpus/*.md; do echo \"########## $f\"; cat \"$f\"; echo; done", "description": "Read all four corpus documents"}
+  Bash:{"command": "cat <沙箱>/work/eval-out/timings.tsv; echo \"=== v1 ===\"; cat <沙箱>/work/eval-out/v1.txt", "description": "Read tim
+  Bash:{"command": "for i in 2 3 4 5 6 7 8 9 10 n1; do echo \"########## $i\"; cat <沙箱>/work/eval-out/$i.txt; echo; done", "description": "Read remain
+  Bash:{"command": "for i in v2 v3 v4 v5 v6 v7 v8 v9 v10; do echo \"########## $i\"; cat <沙箱>/work/eval-out/$i.txt; echo; done", "description": "Read 
+  Bash:{"command": "cd <沙箱> && ls -la logs/*/ 2>/dev/null | head -40; echo \"=== find question-set-ish files ===\"; find . -maxdepth 4 \\( -name '*.js
+  Bash:{"command": "cat <沙箱>/.kb2_id <沙箱>/.kb2_docids; echo \"=== ask.sh ===\"; cat <沙箱>/ask.sh; echo \"=== service?
+  Bash:{"command": "echo \"===== qa-plan.tsv =====\"; cat <沙箱>/work/qa-plan.tsv; echo; echo \"===== run-eval.sh =====\"; cat <沙箱>/wor
+  Read:{"file_path": "<沙箱>/work/kb-retrieval-acceptance-report.md"}
+  Bash:{"command": "python3 -I probe.py 2>&1 | tail -30", "description": "Run existing probe to check KB sizes and return cap"}
+  Bash:{"command": "python3 -I probe2.py 2>&1 | tail -30", "description": "Run second probe across both KBs"}
+  Bash:{"command": "cat > <干净工作目录>/rk.py <<'PY'\nimport json, urllib.request\nROOT=\"<沙箱>\"; API=\"http://127.0.0.1:8080/api/v1\"\nTOKEN=o
+  Bash:{"command": "cat > <干净工作目录>/sz.py <<'PY'\nimport json, urllib.request\nROOT=\"<沙箱>\"; API=\"http://127.0.0.1:8080/api/v1\"\nTOKEN=o
+
+--- 最终输出 ---
+先别换。你这两句话和上一轮已经落盘的对拍数据是冲突的，我想先把这个冲突解开，再动手。
+
+## 一、你说"Top1 基本都对"，但这条链路上现在看不到真正的 Top1
+
+我刚复跑了一遍 `hybrid-search`（只读，没动任何东西）：
+
+- 这个库 **4 篇 = 8 个块，top-k 上限也是 8**。`top_k=200` 也只回 8 条，而且**任何问句都回同样这 8 条**（我试了"门禁""访客来访要提前多久报备""D级权限"，三次返回的 chunk 集合完全一致）。
+- 也就是说：**整个库永远全量进 context，检索排序对答案没有因果影响。**
+
+所以你看到的那个"Top1"，大概率是答案里内联的 `<kb doc="...">` —— 那是**生成模型自己挑的文档**，不是检索排序。拿它当检索 Top1，等于用生成侧的结果去评检索侧，两边会一起显得很对。
+
+真正的检索排序长这样（实时取的）：
+
+| 问句 | rank1 | rank2 | rank3 |
+|---|---|---|---|
+| 访客现在还需要交押金吗？ | **01-v1-2024**（已被取代）1.0000 · summary | 02-v2 0.9792 | 04 0.9593 |
+| 访客来访要提前多久报备？ | **04-异常处置** 0.9815 · summary | 04 正文 0.9660 | 02-v2 正文 0.9623 |
+
+上一轮记录的是 **检索 Top1 = 6/10**，四道 02 号文档的题系统性不命中。这个数没变。
+
+## 二、"内容是反的" —— 我有一个很具体的怀疑
+
+语料里 `01` 和 `02` 是**同主题的新旧两版**（v1 已被 v2 取代）。而检索层在"押金"题上，**恰好把已被取代的 01-v1 顶到第 1（1.0000）**。
+
+如果你"拿回原文核"的时候，核的是检索置顶的那篇 —— 那答案就会条条看着是反的：
+
+| 事实 | 01-v1（检索排第1的那篇） | 02-v2（模型实际答的） |
+|---|---|---|
+| 报备时限 | 提前 **1 个工作日** | 提前 **2 小时** |
+| 押金 | 交 **50 元** | **不再收取** |
+| 访客进机房 | 仅限一层办公区 | **不得进入**机房与档案室 |
+
+四道题全踩在这些差异上。**这不像是生成答反了，更像是核错了版本** —— 而且错的那一版正是检索层自己推荐给你的。这属于"旧版压制"，是检索侧最危险的失败形态，恰好也印证上一轮"主因在检索侧"的结论。
+
+## 三、所以为什么现在不该换生成模型
+
+换生成模型只在一种情况下是对的方向：**检索 Top1 已达标、而生成正确率仍然很低**。上一轮的数据正好相反 —— 生成 10/10 逐字对拍无相反无编造，检索只有 6/10，**决定性条目（检索命中、生成却错）= 0**。这个方向换不到你看到的问题上。
+
+另外，"换更大的模型就一定更好"这句话本身没有被对照验证过，别当成既成结论用。
+
+## 四、需要你给两样东西，我才能往下走
+
+1. **"内容是反的"具体是哪几条**：问题原文 + 答案原文 + 你核的是**哪一篇的哪一段**。这是生成错误里最高危的一档（与原文相反），真成立会推翻上一轮归因；但我不想在没看到具体条目之前改结论。
+2. **这个库现在测不出检索**：8 块语料 vs top-k 上限 8，检索坏没坏都不改变结果。要真验检索，得先把语料块数做到大于返回上限。顺带一提，另一个 `ANC自用语料-验证`（28 篇）返回 ~100 条，很可能也是全量入库，值得同样核一下上限。
+
+拿到第 1 条之后，下一步不是换模型，是先做三变体消融：**只用 Top1 / 用现有全量 context / 把 gold 强制置顶**。三者的差异比换模型快得多地指向问题在"生成能力"还是在"context 组装"。
+
+---
+
+**检查点留给你拍**（上一轮报告里的 E6 那一格还开着）：现在有两条路 ——
+
+- **A**：按上一轮结论修检索（接 rerank / 换中文嵌入 / 按版本加权拦掉 01 压 02），同一批题重跑；
+- **B**：你先给我那几条"反的"的原文对照，我重新跑一遍分腿算分，归因可能要改。
+
+选哪条你定。**取消一个方向也是结论。**
+
+口径提醒：以上基于本机 4 篇合成语料 + nomic-embed-text + qwen3:8b 的当前运行特征，是自用样例，小分母（10 条），不是客户验收，也不能当对外效果承诺。

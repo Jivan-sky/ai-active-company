@@ -1,0 +1,29 @@
+skill_calls=0
+
+文件/命令访问记录(3 条):
+  Bash:{"command": "ls -la <干净工作目录>/", "description": "List files in working directory"}
+  Bash:{"command": "find <干净工作目录> -maxdepth 3 -type f | head -50", "description": "Find files up to 3 levels deep"}
+  Bash:{"command": "ls -la <沙箱>/home/.claude/projects/-<干净工作目录>/memory/ 2>&1; echo \"---MEMORY.md---\"; cat <沙箱>/home/.clau
+
+--- 最终输出 ---
+我看了下，`<干净工作目录>/` 是空的，没有找到产品手册文件（记忆目录里也没有相关记录）。
+
+**请把手册放进来或告诉我路径**，比如：
+
+```
+<干净工作目录>/manual.md     # 或 .docx / .pdf / .txt
+```
+
+或者你直接把手册内容粘贴到对话里也可以。
+
+拿到文件后我会产出两份东西：
+
+1. **英文翻译** —— 存成 `manual.en.md`
+2. **PPT 大纲** —— 存成 `outline.md`，按产品手册的结构组织成幻灯片骨架
+
+顺便可以先确认两点，能省一轮来回（不确定的话我按默认来）：
+
+- **PPT 受众**：内部团队 / 客户 / 投资人？这决定大纲的详略和侧重（默认按**面向客户的产品介绍**处理）
+- **篇幅**：大约多少页？（默认 **15–20 页**）
+
+另外提一句，如果手册里有表格、图表或截图，翻译时我只会转述文字内容，图片本身没法翻译 —— 到时候我会在对应位置留标记告诉你哪里需要替换图片。

@@ -1,0 +1,64 @@
+skill_calls=1
+  skill_input={"skill": "kb-retrieval-acceptance"}
+
+文件/命令访问记录(12 条):
+  Bash:{"command": "ls -la <干净工作目录>", "description": "List working directory contents"}
+  Read:{"file_path": "<干净工作目录>/probe.py"}
+  Read:{"file_path": "<干净工作目录>/probe2.py"}
+  Bash:{"command": "ls -la <沙箱>/home/.claude/projects/-<干净工作目录>/memory/ 2>&1; echo \"=== MEMORY.md ===\"; cat <沙箱>/home/.c
+  Bash:{"command": "ls -la <沙箱> 2>&1 | head -50", "description": "List sandbox root"}
+  Bash:{"command": "cd <沙箱> && echo \"=== corpus ===\"; ls -la corpus; echo \"=== work ===\"; find work -maxdepth 3 | head -60; echo \"=== work-clean 
+  Read:{"file_path": "<沙箱>/work/kb-retrieval-acceptance-report.md"}
+  Read:{"file_path": "<沙箱>/work/qa-plan.tsv"}
+  Bash:{"command": "cd <沙箱> && find work logs -type f -printf '%TY-%Tm-%Td %TH:%TM  %10s  %p\\n' | sort | tail -40", "description": "Show file timesta
+  Bash:{"command": "cd <沙箱> && echo \"=== .task.txt ===\"; cat work/.task.txt; echo; echo \"=== run-eval.sh ===\"; cat work/run-eval.sh", "description
+  Bash:{"command": "cd <沙箱> && for r in r3 r4 r5; do echo \"=== $r/prompts.tsv ===\"; cat logs/$r/prompts.tsv; echo; done", "description": "Read promp
+  Bash:{"command": "cd <沙箱> && ls logs/r2 logs/r3 logs/r4 logs/r5 logs/exec logs/baseline logs/trigger", "description": "List all log round directorie
+
+--- 最终输出 ---
+## 先回答：这个现象不该动 rerank
+
+「Top1 基本对、答案不对」不是 rerank 能修的东西。
+
+rerank 是在**已经召回的候选集内部重排** —— 它只能改顺序，不能改内容。Top1 已经是对的了，它的调整空间基本为零；答错的内容也不会因为把第 3 名提到第 1 名而变对。真正能改变答案的是「进了 context 的是哪些块」，那是召回侧和 context 组装侧的事，不是重排侧的事。
+
+按分腿判法，「检索命中 + 生成错误」这一档正是指向**生成侧**的签名，卡里最重的一条「不要」就是：这种情形下别去动检索。
+
+## 但在归因生成侧之前，先排掉两个「看着像命中」的假象
+
+你说 Top1 基本都对 —— 先确认这个数是怎么量出来的。有三种情况会让「Top1 对」和「答错」同时成立，而且其中两种仍在检索侧：
+
+1. **命中口径**：如果看的是回答里的引用列表、或者凭「排第一的那篇主题确实是这个」判断，那要小心 —— **同主题的另一篇算不命中**。你们语料里如果存在同一件事的新旧版本（比如访客登记 v1/v2），被取代的旧版排到第 1 会「看着完全正确」，但答案就是反的。这种要单列「旧版压制」，不并入 Top1 不命中。
+2. **块级**：盘对了 ≠ 含答案句的那一段进了 context。「盘对了、块是另一段」是独立的第三种失败形态，必须单独判一格 —— 只判盘级会完全放过它。
+
+这两条排掉之后，如果确实是「Top1 命中、块也对、生成却错」，那才是生成侧。
+
+## 「我看不太对」要先变成可复核的对拍
+
+不能凭「像不像」判。拿回答逐字回到那篇原文，按严重度归档：与原文**相反** > 原文**没有**却说了 > 原文的关键断言**一条没进**（哪怕结论碰巧对）> 答非所问。然后分开数两个数，**不要合并成一个准确率**：
+
+- 检索 Top1 命中率
+- 生成正确率
+
+再数「检索命中、生成却错」的**决定性条数** —— 这个数直接决定后面所有投入往哪走。
+
+两个提醒：答案**通顺、有结构、甚至带表格，不是通过的证据**，先怀疑它；**引用条数**也不能当可信依据，引对了文档照样能答反。
+
+## 如果确认是生成侧
+
+也**不要**直接「换个更大的模型重跑」。先做三变体消融（同一批题，只改 context 组装这一个变量）：**只用 Top1** / **用现有全量 context** / **把 gold 强制置顶**。因为「问题在 context 组装」和「模型不行」表面上长得一模一样，只换模型会把前者误判成后者。
+
+另外顺带一句：动手前先确认 rerank **到底有没有在跑**。不少部署里 `config.yaml` 写着 `enable_rerank: true`，但模型注册表里根本没有 Rerank 类型的模型、进程里也没有对应服务 —— 那样「调 rerank」是在拧一个没接上的旋钮。
+
+还有个小前提：如果你手上语料很小、块数还不到检索返回上限（整库全量都会被塞进 context），那 Top1 命中率本身就**不说明问题** —— 排序对答案没有因果影响，测出来必然是假绿。
+
+## 我需要你给两样东西
+
+1. **题集 + 出处**（出处要写到篇 + 章节/小标题级，且**在写答案之前就定好**，否则判据会随答案漂移；题量要覆盖每一类关键主张，并带一条「语料里根本没有」的负例）；
+2. **逐条记录**：三格判定（检索盘级 / 检索块级 / 生成）+ 一句对拍说明，另记**命中块的类型**（正文 / 自动摘要 / FAQ）和**实际送去检索的 query**（链路会改写 query 的话记改写后的，否则复现不出同样的排序）。
+
+拿到之后我数出决定性条数，把主因侧归因给你 —— **这一步要你拍板**，它决定后面是修检索、修 context、还是换模型。
+
+---
+
+补一句可能对不上的地方：这台机器上 `work/` 里有一份此前对 4 篇小语料做的对拍报告，结论是「检索 Top1 命中 6/10、生成 10/10」，也就是**检索腿弱、生成腿能用**，跟你描述的正好相反。如果你说的是那一轮，Premise 得先改；如果那是另一套环境/另一批语料，告我一声，我就按你现在这套来。
