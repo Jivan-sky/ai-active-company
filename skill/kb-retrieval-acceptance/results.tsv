@@ -1,0 +1,3 @@
+ts	skill	round	mode	dim	score_before	score_after	verdict	judges	dry_run	note
+2026-10-14T00:23	kb-retrieval-acceptance	0	baseline	all		84.0			false	阶段A基线：9维加权 84.0/100；闸门「单一事实源」命中（同一份 E0–E7 规则同时存在于 SKILL.md 与 runs/04-cards/），按规矩先修闸门再进优化循环
+2026-10-14T00:32	kb-retrieval-acceptance	1	optimize	7	84.0	86.4	better	3-0	false	维度7补遗漏（E1语料规模/成对出题、E3块类型与检索query、E4块级格与分通道、E7同步）+消冗余（分母口径二处合一处）；keep 由成对比较判（3-0 better, 明显），绝对分仅排序。闸门「单一事实源」同轮修掉：先按B拆成 REFERENCE.md 被评委 2/3 判未过，改回单文件后 3/3 过。详见 runs/kb-retrieval-acceptance/09-evolve/02-round1.md

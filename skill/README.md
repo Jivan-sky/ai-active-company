@@ -15,12 +15,22 @@
 
 三者是一条链：`anc-distill-targets`（定对象）→ `anc-distill`（做出来）→ `anc-evolve`（变强）。
 
+### 已蒸馏出的能力件
+
+上面三件是**方法**；下面是它们**蒸出来的产物**（`anc-distill` 阶段 8 的编译结果）。两者共用同一个扁平命名空间，装配方式相同；区别只在「谁是方法、谁是产物」。
+
+| 地址 | 能力 | 来源 |
+|---|---|---|
+| `skill/kb-retrieval-acceptance/SKILL.md` | **自托管检索层验收**：把「找得着吗」与「照着答对了吗」分开算分，数「检索已命中、答案仍错」的条数定主因侧，并给出判停点 | 蒸馏自一次真实运行；过程记录在 `skill/runs/kb-retrieval-acceptance/`。**自用样例，不算客户验收** |
+
+自带评测用例：`skill/kb-retrieval-acceptance/test-prompts.json`（8 条：正向 / 负向 / 近邻 / 输出断言）；评测台账：`skill/kb-retrieval-acceptance/results.tsv`（`anc-evolve` 首次分 **84.0 / 100**；闸门「单一事实源」已在第 1 轮修掉 —— 规则改为单文件单向维护；第 1 轮 keep，参考分 86.4）。
+
 ## 装配
 
 扁平命名空间，三个独立入口，复制到 skills 根目录即可：
 
 ```powershell
-Copy-Item -Recurse -Force .\skill\anc-distill,.\skill\anc-distill-targets,.\skill\anc-evolve "$env:USERPROFILE\.agents\skills\"
+Copy-Item -Recurse -Force .\skill\anc-distill,.\skill\anc-distill-targets,.\skill\anc-evolve,.\skill\kb-retrieval-acceptance "$env:USERPROFILE\.agents\skills\"
 ```
 
 macOS / Linux 用对应的 `cp -r`。装到哪个根目录由宿主决定，本仓库不假设。
@@ -63,5 +73,6 @@ macOS / Linux 用对应的 `cp -r`。装到哪个根目录由宿主决定，本�
 
 ## 未验证
 
-- 这三件**没有跑过压力测试**，也还没写 `test-prompts.json` —— 它们自己尚未被 `anc-evolve` 评过。
+- `anc-distill` / `anc-distill-targets` / `anc-evolve` 这三件**没有跑过压力测试**，也还没写 `test-prompts.json` —— 它们自己尚未被 `anc-evolve` 评过。
+- `skill/kb-retrieval-acceptance/` 已编译并通过 `anc-distill` 阶段 0–6。**阶段 7 压力测试**：触发测试与执行测试**已真跑**，但执行测试的结论口径被独立复核修正四处 → 记为「**走完、待回炉**」，按规矩不得标「通过」；基线对照部分有效（3 条干净 / 2 条被污染）。记录在 `skill/runs/kb-retrieval-acceptance/06-pressure.md`，原始凭证在 `skill/runs/kb-retrieval-acceptance/08-exec-test/`。
 - 机制溯源是重写而非引用；其中 `relic.skill` 的许可证未核实，若要引用其模板原文需先确认。

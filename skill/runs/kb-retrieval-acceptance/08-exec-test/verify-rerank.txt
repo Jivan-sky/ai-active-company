@@ -1,0 +1,46 @@
+# 证据 · rerank 为何没生效
+
+## 1) 配置（生效那份 config.yaml，conversation 段）
+12:  embedding_top_k: 30
+14:  rerank_threshold: 0.3
+15:  rerank_top_k: 30
+21:  enable_rerank: true
+
+## 2) 模型注册表（实测只有 2 个，无 Rerank 类型）
+  type=Embedding    name=nomic-embed-text source=local
+  type=KnowledgeQA  name=qwen3:8b source=local
+
+## 3) 运行日志逐字（每个回合都走这条）
+12574:WARNING[2026-10-14 00:02:28.224] [da372110-4190-4c9a-8768-f57dbbcf870f]                      | [PIPELINE] stage=Rerank action=skip reason="empty_model_id"
+12577:WARNING[2026-10-14 00:02:28.224] [da372110-4190-4c9a-8768-f57dbbcf870f]                      | [PIPELINE] stage=Merge action=fallback input_cnt=8 kept_cnt=8 reason="empty_rerank_result"
+12624:INFO [2026-10-14 00:02:28.228] [da372110-4190-4c9a-8768-f57dbbcf870f]                      | [PIPELINE] stage=FilterTopK action=input merge_cnt=8 rerank_cnt=0 search_cnt=8 session_id="ae789931-cdc8-47d9-a95b-e9b03c83bd17" top_k=30
+12895:WARNING[2026-10-14 00:03:51.342] [2dbbcb2d-fd9e-4cfd-a3c8-d99e251d8f40]                      | [PIPELINE] stage=Rerank action=skip reason="empty_model_id"
+12898:WARNING[2026-10-14 00:03:51.342] [2dbbcb2d-fd9e-4cfd-a3c8-d99e251d8f40]                      | [PIPELINE] stage=Merge action=fallback input_cnt=8 kept_cnt=8 reason="empty_rerank_result"
+12945:INFO [2026-10-14 00:03:51.350] [2dbbcb2d-fd9e-4cfd-a3c8-d99e251d8f40]                      | [PIPELINE] stage=FilterTopK action=input merge_cnt=8 rerank_cnt=0 search_cnt=8 session_id="2ab7c7a4-5066-41fb-ab66-70b5d0b5b8bc" top_k=30
+13234:WARNING[2026-10-14 00:04:55.839] [c822ce87-10e7-43c1-af0e-5bafe7beb40a]                      | [PIPELINE] stage=Rerank action=skip reason="empty_model_id"
+13237:WARNING[2026-10-14 00:04:55.839] [c822ce87-10e7-43c1-af0e-5bafe7beb40a]                      | [PIPELINE] stage=Merge action=fallback input_cnt=8 kept_cnt=8 reason="empty_rerank_result"
+13284:INFO [2026-10-14 00:04:55.847] [c822ce87-10e7-43c1-af0e-5bafe7beb40a]                      | [PIPELINE] stage=FilterTopK action=input merge_cnt=8 rerank_cnt=0 search_cnt=8 session_id="1f253909-69e8-4417-9770-b8cad8263127" top_k=30
+13683:WARNING[2026-10-14 00:06:44.518] [278e949f-d2ae-484f-80c1-a632ff50f80f]                      | [PIPELINE] stage=Rerank action=skip reason="empty_model_id"
+13686:WARNING[2026-10-14 00:06:44.518] [278e949f-d2ae-484f-80c1-a632ff50f80f]                      | [PIPELINE] stage=Merge action=fallback input_cnt=8 kept_cnt=8 reason="empty_rerank_result"
+13733:INFO [2026-10-14 00:06:44.525] [278e949f-d2ae-484f-80c1-a632ff50f80f]                      | [PIPELINE] stage=FilterTopK action=input merge_cnt=8 rerank_cnt=0 search_cnt=8 session_id="ea29738c-c305-41a2-b3be-2f689bd18778" top_k=30
+
+## 4) 代码侧对应分支（chat_pipeline/rerank.go）
+61:	if chatManage.RerankModelID == "" {
+62-		diag.Outcome = types.RerankOutcomeNoModel
+63-		pipelineWarn(ctx, "Rerank", "skip", map[string]interface{}{
+64-			"reason": "empty_model_id",
+60-	}
+61-	if chatManage.RerankModelID == "" {
+62:		diag.Outcome = types.RerankOutcomeNoModel
+63-		pipelineWarn(ctx, "Rerank", "skip", map[string]interface{}{
+64-			"reason": "empty_model_id",
+
+## 5) query 改写在跑（chat 路径检索用的不是原始问句）
+rewrite_query="访客扫码登记失败时的处理方法是什么"
+rewrite_query="访客扫码登记失败时的处理方法是什么"
+rewrite_query="访客扫码登记失败时的处理方法是什么"
+rewrite_query="访客扫码登记失败时的处理方法是什么"
+rewrite_query="公司门禁权限里的 D 级权限可以通行哪些区域"
+rewrite_query="公司门禁权限里的 D 级权限可以通行哪些区域"
+rewrite_query="公司门禁权限里的 D 级权限可以通行哪些区域"
+rewrite_query="公司门禁权限里的 D 级权限可以通行哪些区域"
