@@ -57,10 +57,13 @@
     --accent-soft: #e3edfb;
     --warm: #b96f1c;
 
-    /* 四档语义色：形状 + 颜色一起变（色盲、灰度截图、小屏都分得开） */
+    /* 语义色：形状 + 颜色一起变（色盲、灰度截图、小屏都分得开） */
     --green: #17924f;
     --amber: #d99a1a;
     --red: #cf3b30;
+    /* 第五档（等一句话）用靛蓝：它跟那条蓝主色不是一个意思 ——
+       主色是「可以点」，这一档是「有人在等你」，混了就把状态读成了链接 */
+    --indigo: #4a45c4;
 
     --radius: 14px;
     --radius-lg: 20px;
@@ -208,23 +211,49 @@
   /* 状态点 + 文字：.dot 是固定宽高，得靠 inline-flex 才撑得开 */
   .st { display: inline-flex; align-items: center; gap: 8px; }
 
-  /* 状态灯：四个档**形状 + 颜色**一起变，不靠色深 —— 色盲、灰度截图、小屏都分得开。
-     ok   = 实心圆       —— 好，已经过去了
-     warn = 带光环的圆   —— 运行中（那圈光晕在呼吸，就是「在动」）
-     bad  = 菱形         —— 停 / 坏，形状和另外三个最不一样
-     gray = 空心虚线圈   —— 认不出的词，**没人判过**
+  /* 状态灯：**形状 + 颜色**一起变，不靠色深 —— 色盲、灰度截图、小屏都分得开。
+     ok    = 实心圆         —— 好，已经过去了
+     warn  = 带光环的圆     —— 运行中（那圈光晕在呼吸，就是「在动」）
+     bad   = 菱形           —— 停 / 坏，形状和另外三个最不一样
+     wait  = 靛蓝暂停形     —— **等人给一句话**（A2A 的 input-required）：
+                              没坏，也不是系统自己在走，是缺一个决定或一次授权
+     gray  = 空心虚线圈     —— 认不出的词，**没人判过**
+     gray-solid = 灰实心    —— **本来就不该期待**（真相源声明「还没接凭据」）
+     灰的两种**必须分开**：一个说「没人判过，去判」，一个说「本来就不该期待，别去催」——
+     它们共用一个符号时，读的人分不清「没判过」和「没轮到你」，那正是 #59 要修的那件事。
      灰刻意不许像绿：一个是「过了」，一个是「没人判过」，混了就等于把没判过的当过了。
      只有 warn 与 bad 呼吸（4.4s，幅度压在 3px 以内）—— 会动的信息才需要动；
-     绿与灰一律静：它们没有「正在发生」的意思，动起来只会是噪音。
+     其余一律静：它们没有「正在发生」的意思，动起来只会是噪音。
+     **视觉重量按「要不要人动手」排**：红与靛蓝都是要人动手的，所以最大；
+     灰是「没人判过」，得看得见 —— 看不清就会被读成「没问题」，那是最坏的一种误读。
      暖纸比冷底吃色，所以实心档都带一圈同色淡光环：小尺寸下也站得住。 */
-  .dot { width: 13px; height: 13px; flex: none; border-radius: 50%; background: transparent; border: 1.6px dashed var(--ink-3); }
+  /* display: inline-block 不是装饰，是**这个点立不立得住**的前提：
+     固定在宽高的 span 若还是 inline，宽高一律被忽略 —— 运行态那张表里用的是光杆 .dot
+     （外面没有 .st 这个 inline-flex 撑着），它会塌成一根 4px 的细条，绿/黄/红三档更是一片空白。 */
+  .dot { display: inline-block; width: 13px; height: 13px; flex: none; border-radius: 50%; background: transparent; border: 2px dashed var(--ink-3); }
   .dot.ok { background: var(--green); border: 0; box-shadow: 0 0 0 3.5px rgba(23, 146, 79, 0.17); }
   .dot.warn { background: var(--amber); border: 0; animation: breathe-warn 4.4s ease-in-out infinite; }
   .dot.bad {
+    width: 16px; height: 16px;
     background: var(--red); border: 0; border-radius: 3.5px; transform: rotate(45deg);
     animation: breathe-bad 4.4s ease-in-out infinite;
   }
-  .dot.gray { background: transparent; border: 1.6px dashed var(--ink-3); box-shadow: none; animation: none; }
+  .dot.gray { background: rgba(109, 122, 143, 0.08); border: 2px dashed var(--ink-3); box-shadow: none; animation: none; }
+  /* 灰实心：**不该期待**（未接凭据）。与虚线圈的差别不只是「实/虚」——
+     一个是「去判它」，一个是「别催它」，所以填充与描边一起变。 */
+  .dot.gray-solid { background: var(--ink-3); border: 2px solid var(--ink-3); box-shadow: none; animation: none; }
+  /* 等人给一句话：靛蓝 + 暂停形（两条竖杠）。形状只由 CSS 给，不加元素 ——
+     「加一张表，别加一层 if」那条纪律同样管视觉：档与符号的对应全在这一段里。 */
+  .dot.wait {
+    width: 15px; height: 15px; border: 0; border-radius: 3px;
+    background-color: transparent;
+    background-image: linear-gradient(to right,
+      var(--indigo) 0 33%, transparent 33% 66%, var(--indigo) 66% 100%);
+    box-shadow: 0 0 0 3.5px rgba(74, 69, 196, 0.16);
+  }
+  /* 数字卡片上那些点再大一档：它们站在 42px 的大数字旁边，同一个尺寸会显得没重量。 */
+  .card.stat .st .dot, .fig .st .dot { width: 17px; height: 17px; }
+  .card.stat .st .dot.bad, .fig .st .dot.bad { width: 20px; height: 20px; }
   @keyframes breathe-warn {
     0%, 100% { box-shadow: 0 0 0 3.5px rgba(217, 154, 26, 0.16); }
     50%      { box-shadow: 0 0 0 6.5px rgba(217, 154, 26, 0.34); }

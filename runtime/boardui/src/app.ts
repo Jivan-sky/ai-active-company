@@ -127,6 +127,9 @@ type ApprovalSignal = { value: string; label: string };
 type ApprovalPending = {
   id: string; who: string; to: string; domain: string; project: string;
   title: string; body: string; enqueued: string; status: string;
+  // band 是判真那一档：「在队列里」= 有人在等你给一句话（服务端给词，前端照画）。
+  // 它与 status 是两回事 —— status 是提案自己写的词，band 是队列这个事实。
+  band?: string;
 };
 type ApprovalView = {
   schema: string; wired: boolean; why?: string; error?: string;
@@ -604,7 +607,9 @@ const RUN_STATE: Record<string, { dot: string; label: string }> = {
   ok: { dot: "dot ok", label: "绿 · 近期回过话" },
   warn: { dot: "dot warn", label: "黄 · 运行中 / 未观测" },
   fail: { dot: "dot bad", label: "红 · 卡点，需介入" },
-  unwired: { dot: "dot gray", label: "灰 · 未接凭据" },
+  // 未接凭据：**本来就不该期待它回话**。用灰**实心**，与「认不出的词」那个空心虚线圈分开 ——
+  // 一个说「别催它」，一个说「去判它」（#59：灰原来把两种意思叠在一个符号上）。
+  unwired: { dot: "dot gray-solid", label: "灰实心 · 未接凭据（本来就不该期待）" },
 };
 const runState = (s: string) => RUN_STATE[s] ?? { dot: "dot", label: dash(s) };
 
@@ -869,8 +874,13 @@ function bySection(): Kid {
 function pendingCard(v: ApprovalView, p: ApprovalPending): HTMLElement {
   const title = (p.title ?? "").trim();
   const subject = [p.domain, p.project].map((x) => (x ?? "").trim()).filter((x) => x !== "").join(" / ");
+  // 判真那一档：**在队列里 = 有人在等你给一句话**（靛蓝 + 暂停形）。
+  // 档由服务端给（band），前端照画；服务端没给就不画点 —— 宁可少一个符号，
+  // 也不画一个说不清什么意思的圆。符号旁边永远带词（颜色不许单独承载信息）。
+  const band = (p.band ?? "").trim();
+  const lamp: Kid[] = band === "" ? [] : [dotLine(bandDot(band), el("span", {}, bandWord(band)))];
   return el("div", { class: "card prop" },
-    el("h3", {}, title === "" ? "（提案没写标题）" : title, chip(dash(p.id), true)),
+    el("h3", {}, ...lamp, el("span", {}, title === "" ? "（提案没写标题）" : title), chip(dash(p.id), true)),
     el("dl", {},
       el("dt", {}, "该谁批"),
       el("dd", {}, (p.to ?? "").trim() === "" ? cannot("域表里没写 who —— 不知道该谁批") : p.to),
@@ -938,7 +948,8 @@ function pendingSection(v: ApprovalView): Kid {
     return section("队列", "进队时间从早到晚 —— 早提的先办",
       emptyNote("队列是空的：现在没有等点头的提案。"));
   }
-  return section("队列", "一共 " + v.count + " 条 —— 早提的排前面",
+  return section("队列", "一共 " + v.count + " 条 —— 早提的排前面；每条前面那个靛蓝暂停符号是判真第四档："
+    + "有人在等你给一句话（没坏，也不是系统自己在走）",
     el("div", { class: "grid props" }, ...v.pending.map((p) => pendingCard(v, p))));
 }
 
@@ -987,10 +998,14 @@ function renderApprovals(d: Data): Kid[] {
 //   - 一个 case 多行 = 一次推进：表里取最后一条当当前态，历史留在「每一步」里，一行不删。
 const BAND_DOT: Record<string, string> = {
   green: "dot ok", yellow: "dot warn", red: "dot bad", unknown: "dot gray",
+  // 第四档：等人给一句话。它**不来自 status** —— 来自「这条正躺在待批队列里」这个事实，
+  // 所以它只在真有那个数据源的地方出现（审批页），不从热层的 status 词推（#59 拍的口径）。
+  "input-required": "dot wait",
 };
 const bandDot = (b: string): string => BAND_DOT[b] ?? "dot";
 const BAND_WORD: Record<string, string> = {
   green: "绿 · 已完成", yellow: "黄 · 运行中", red: "红 · 卡点 / 失败", unknown: "灰 · 认不出的词",
+  "input-required": "靛 · 等你给一句话",
 };
 const bandWord = (b: string): string => BAND_WORD[b] ?? "灰 · 认不出的词";
 

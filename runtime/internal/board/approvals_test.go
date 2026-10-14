@@ -12,6 +12,7 @@ import (
 
 	"anc/internal/approvals"
 	"anc/internal/hot"
+	"anc/internal/timeline"
 )
 
 // boardFakeQueue 是热层的假替身。这一层测的是**看板那张嘴**（路由 / 方法 / Content-Type /
@@ -181,6 +182,36 @@ func TestApprovalsListIsContractShape(t *testing.T) {
 	}
 	if v.Pending[0].Enqueued != "2026-10-10T20:00:00+08:00" {
 		t.Fatalf("进队时间该原样端出来：%q", v.Pending[0].Enqueued)
+	}
+}
+
+// 判真第四档：**在待批队列里 = 有人在等你给一句话**（靛蓝 + 暂停形，A2A 的 input-required）。
+//
+// 两件事都要钉住：
+//  1. 这一档由**队列这个事实**给（每一行都带），不从提案自己的 status 推；
+//  2. 它**不进 timeline 的词表** —— 那根轴分的是真相源里的 status 词，两路数据不许混（#59）。
+func TestApprovalsCarryInputRequiredBand(t *testing.T) {
+	q := newBoardFakeQueue()
+	seedPending(t, q, "p-1")
+	raw := get(t, boardWith(t, fixturePath(t, "domains"), q), "/api/approvals").Body.String()
+
+	var v ApprovalView
+	if err := json.Unmarshal([]byte(raw), &v); err != nil {
+		t.Fatal(err)
+	}
+	if len(v.Pending) != 1 {
+		t.Fatalf("该读到 1 条待批：%+v", v)
+	}
+	if v.Pending[0].Band != BandInputRequired {
+		t.Fatalf("待批那一行该带第四档 %q，实际 %q", BandInputRequired, v.Pending[0].Band)
+	}
+	// 这一档不许改写 status：status 是提案自己写的词，band 是队列这个事实，两回事。
+	if v.Pending[0].Status == BandInputRequired {
+		t.Fatal("band 把 status 盖掉了 —— 提案写的词该原样端出来")
+	}
+	// 两路数据不许混：这一档落进 timeline 那根轴里，只该是「认不出的词」。
+	if got := timeline.Band(BandInputRequired); got != "unknown" {
+		t.Fatalf("第四档不该在 timeline 的词表里（该落 unknown），实际 %q", got)
 	}
 }
 

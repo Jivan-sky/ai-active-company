@@ -42,6 +42,17 @@ type ApprovalView struct {
 	Pending   []PendingView `json:"pending"`
 }
 
+// BandInputRequired 是「判真」那根轴上的**第四档**：**等人给一句话**
+// （A2A 任务状态机里的一等中断态 `input-required` —— 不是失败，也不是系统自己在走）。
+//
+// 为什么它住在这里、**不进 `timeline.Band` 的词表**：
+// `timeline.Band` 分的是**真相源里 status 那些词**（绿 / 黄 / 红 / 认不出的词），
+// 这一档根本不来自 status —— 它来自「这条提案正躺在待批队列里」这个事实本身。
+// 两路数据共用一个词表，迟早会把「在跑」和「等你点头」读成一件事（#59 要修的就是这个）。
+//
+// 这个词只有一处：前端照它画符号（靛蓝 + 暂停形），不另抄一份。
+const BandInputRequired = "input-required"
+
 // PendingView 是一条待批的对外形状（snake_case —— 与其它几份契约同一套写法）。
 //
 // 为什么不直接出 approvals.Pending：那是**领域类型**（字段大写、给 Go 用），
@@ -57,6 +68,9 @@ type PendingView struct {
 	Body     string `json:"body"`     // 提案原文：一字不改地端出来，看板不解析、不截断
 	Enqueued string `json:"enqueued"` // RFC3339：什么时候进的队列
 	Status   string `json:"status"`   // 当前态（从热层读回来是原样，不在这里改写）
+	// Band 是判真那一档：**在队列里 = 有人在等你给一句话**（BandInputRequired）。
+	// 不由 status 推 —— status 是提案自己写的词，而「在等人」是队列这个事实。
+	Band string `json:"band"`
 }
 
 func pendingViews(list []approvals.Pending) []PendingView {
@@ -65,6 +79,7 @@ func pendingViews(list []approvals.Pending) []PendingView {
 		out = append(out, PendingView{
 			ID: p.ID, Who: p.Who, To: p.To, Domain: p.Domain, Project: p.Project,
 			Title: p.Title, Body: p.Body, Enqueued: p.Enqueued, Status: p.Status,
+			Band: BandInputRequired,
 		})
 	}
 	return out
