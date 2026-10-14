@@ -389,16 +389,25 @@ func short(s string) string {
 
 // writeAtomic：同目录 temp + fsync + rename，权限 600（配置里只有 ${ENV} 引用，但仍收紧）。
 func writeAtomic(path, text string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	return writeFileAtomic(path, []byte(text), 0o600, 0o700)
+}
+
+// writeFileAtomic 是同目录 temp + fsync + rename 的通用写口。
+//
+// 权限由调用方给：config 那份是 600 / 700（里面只有 ${ENV} 引用，但仍收紧）；
+// 真相源里的 markdown 是 644 / 755 —— 与 org init 生成的那批同档，
+// 不然一次 `anc ingest` 之后 vault 里就多出一批只有属主读得了的文件。
+func writeFileAtomic(path string, data []byte, filePerm, dirPerm os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(path), dirPerm); err != nil {
 		return err
 	}
-	f, err := os.CreateTemp(filepath.Dir(path), ".anc-render-*")
+	f, err := os.CreateTemp(filepath.Dir(path), ".anc-write-*")
 	if err != nil {
 		return err
 	}
 	tmp := f.Name()
 	defer os.Remove(tmp)
-	if _, err := f.WriteString(text); err != nil {
+	if _, err := f.Write(data); err != nil {
 		f.Close()
 		return err
 	}
@@ -409,7 +418,7 @@ func writeAtomic(path, text string) error {
 	if err := f.Close(); err != nil {
 		return err
 	}
-	if err := os.Chmod(tmp, 0o600); err != nil {
+	if err := os.Chmod(tmp, filePerm); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)
