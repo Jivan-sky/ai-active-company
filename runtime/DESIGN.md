@@ -2667,6 +2667,85 @@ CLI 是操作者**在自己机器上**打一份投影（同 `anc org export`，�
 ② `on_behalf_of`（署名）只在 MCP 那条路上开，CLI 没开 —— 等真有人要用再加，不预设；
 ③ 看板还没有这一页（`/api/context`）。
 
+**①②③ 的答案在同一天下来了，见 §7.1.48**：人拍了 ① + ②（冻结副本落 vault · 看板加一页）。
+
+### 7.1.48 上下文包的形态落地：看板一页 + 冻结副本（2026-10-14，议题 #53）
+
+§7.1.47 悬着的 ①②③，人当天拍了两条：**① 冻结副本落 vault 一份文件**、**② 看板加一页**；
+③（`on_behalf_of` 在 CLI 上开）没拍，仍只在 MCP 那条路上。
+
+这一刀既要加一个出口、又要加一个落点，前提是装配点得先能被三处共用 —— 原来的装配点住在
+`package main`（`envelope_read.go`），看板在 `internal/board`，**够不着**。所以第一步是把装配点
+搬进 `internal/ctxpack`：
+
+| 住哪 | 是什么 |
+|---|---|
+| `internal/ctxpack/pack.go` | **唯一装配点**：`Assemble(o, vault, who, onBehalf, ask, now) (Out, 拒没拒)` + `IdentityOf` + `SafeToken`。从 `package main` 整段搬来，结构改名（`Out` / `IdentityOut` / …），**json tag 一字未动**，行为逐字不变 |
+| `envelope_read.go` | 只剩 `readContext`（MCP 出口）+ `auditRead` / `readActor` / `mustJSON`，改调 `ctxpack.Assemble` |
+| `context.go` | CLI 出口 + 新增 `freeze` |
+| `internal/board/context.go` | 看板出口（`/api/context`，`anc.context/v1`） |
+
+**为什么搬**：不是为了好看。CLI / MCP / 看板要打的是**同一份**东西，而「同一份」只能靠同一个函数
+保证；让看板去 import `package main` 不行，让看板抄一份更不行 —— 那就成了第二个装配点，
+§7.1.47 那条不变量当场作废。
+
+**看板那一页（`/api/context`）**
+
+| 口径 | 定法 | 为什么 |
+|---|---|---|
+| 不给 `who` | 回 **roster**（`org.Members` + `org.Agents`，逐条走 `o.Identity` + `IdentityOf`） | 看的人得先知道「可以看谁」，这是挑人的那一步 |
+| 给 `who` | 回 **Pack**（那一份） | 同 CLI，同一份 |
+| 拒了（不存在 / 越域） | **照回 200**，拒话在 `pack.refused` 里 | 拒是一次**正常回答**，不是服务坏了 —— 回 500 会让人以为平台躺了 |
+| 加载失败 | 走 `error` 字段 | 它没有「背后服务」这一层，不套 wired / why |
+
+前端：新增「上下文」页（分组 `组织`，问答「一个 agent 的工作上下文是什么？」），插在「项目」之后；
+`fetchData` 多取一份 `/api/context`，`hashchange` 里这一页**只重取那一份**（点 chip 换人时不整页重刷）。
+手写 CSS 加了 `a.chip` 三个态 + `.nw`（标识符不被列宽切两半）。
+
+**冻结副本（`anc context freeze`）**
+
+```
+anc context freeze <vault> --who <编号> [--domain <slug>] [--to <目录>]
+```
+
+- 落点默认 `<vault>/context/`，`--to` 可换；文件名 = **解出来的 `out.Who`**（给了 `domain` 再跟 `.scope`）。
+- **拒了就不冻**：查无此人 / 越域 → 退出 1，**不建目录、不留空壳** —— 先算，算出来才写。
+- 它是**冻结副本**，不是常贮：再冻一次覆盖上一次；落点是快照，真相源仍是 vault 里那些 markdown。
+- **落点不进路由表**：`org.ContextDir` 进了 `skipDirs` —— 它比 `charters/` 更该挡：charters 好歹是
+  「谁放进来的资料」，而 `context/` 是**投影冻住的一刻**，当数据源读就是把一份旧投影当成事实。
+  这一条 `TestContextDirIsNotRouted` 钉着，`anc org export` 的 routing 里也确实没有它。
+- `org init` 的骨架多写一份 `context/CLAUDE.md`（落点约定：不是真相源 / 是快照不是常贮 / 再冻覆盖 /
+  看板看 · MCP 要 · 这目录只给交付与审计取证）。
+
+**两条新的不变量**：
+
+| 不变量 | 为什么 | 用例 |
+|---|---|---|
+| 冻结副本 == stdout + 换行 | 落盘那份与打出来那份**必须逐字节是同一份**，否则「冻住的」与「看到的」又是两个东西 | `TestContextFreezeWritesWhatPackPrints` |
+| 拒了不冻、且不动真相源 | 拒过的请求不该在 vault 里留痕迹（空目录 / 半份文件都是痕迹） | `TestContextFreezeRefusalWritesNothing` · `TestContextFreezeWritesExactlyOneFile`（移走落点后全树指纹逐字节回到前） |
+
+**为什么落 vault（进 git）**：正因为进 git 才叫**冻结副本** —— 可 diff、可回看、可作交付与审计取证。
+它不因此变成真相源：`context/CLAUDE.md` 明写「改这里不影响别人」，路由表也把它挡在外面。
+
+**为什么 freeze 也 CLI 不留痕**：同 §7.1.47 —— 留痕挂的是「一次**行使**」（谁向平台要了什么），
+那条账在 MCP 入口上；CLI 是操作者在自己机器上打投影 / 冻存档，性质同 `anc org export`。
+
+**实测（本机 Windows 11，真起二进制；非单元测试）**：
+
+| 判据 | 结果 |
+|---|---|
+| 看板 roster | ✅ `/api/context` 回 3 人（alice / bob / devbot） |
+| 看板那一份 | ✅ `?who=alice` 回五问 + 项目 + 4 条 gaps，**无本机路径** |
+| 看板拒话 | ✅ `?who=alice&domain=logistics` → 黄横幅拒话 + 指路「运营（Bob Li）」，**不带别人的数据** |
+| 看板换人 | ✅ `?who=alice` 点 Bob → hashchange 重取，页变成 Bob Li / logistics（**不整页重刷**） |
+| 看板没选人 | ✅ 只有「可以看谁」+「挑一个」 |
+| freeze 落盘 | ✅ `context freeze <vault> --who alice` → 退出 0，`context/alice.json` 1258 字节；`pack` stdout 959 字节 + 换行 = 文件内容 |
+| freeze 覆盖 | ✅ 再冻一次 → 「覆盖了原来那一份」 |
+| freeze 拒了 | ✅ 越域 / 查无此人 → 退出 1、落点里没有新文件、目录都没建 |
+| 落点不进路由 | ✅ `anc org export` 的 routing 里**没有** `context`；`anc org check` 通过 |
+| 用例 | ✅ `internal/board/context_test.go` 5 条 + `context_cli_test.go` freeze 4 条 |
+| 质量门 | ✅ `gofmt -l .` 无输出 · `go vet ./...` 无输出 · `go test ./... -count=1` 18 包全绿 |
+
 ## 8. 与 SPEC 的映射
 
 | 本文 | SPEC |

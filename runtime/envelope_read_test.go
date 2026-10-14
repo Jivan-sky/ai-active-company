@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"anc/internal/audit"
+	"anc/internal/ctxpack"
 )
 
 // ---------- 出站读出口（W2）的用例 ----------
@@ -88,9 +89,9 @@ func callRead(t *testing.T, h http.Handler, args map[string]any) (string, bool) 
 }
 
 // parseRead 把回话当契约解 —— 解不出来就是契约破了。
-func parseRead(t *testing.T, text string) readContextOut {
+func parseRead(t *testing.T, text string) ctxpack.Out {
 	t.Helper()
-	var out readContextOut
+	var out ctxpack.Out
 	if err := json.Unmarshal([]byte(text), &out); err != nil {
 		t.Fatalf("回话不是契约里那份 JSON：%v\n%s", err, text)
 	}

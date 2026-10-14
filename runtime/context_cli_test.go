@@ -13,6 +13,9 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"anc/internal/ctxpack"
+	"anc/internal/org"
 )
 
 // ---------- 工作上下文包（议题 #53）的用例 ----------
@@ -47,7 +50,7 @@ func TestContextPackAnswersTheFiveQuestions(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("退出码 %d，期望 0：%s", code, out)
 	}
-	var got readContextOut
+	var got ctxpack.Out
 	if err := json.Unmarshal([]byte(out), &got); err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +95,7 @@ func TestContextPackAndMCPAreOneAssembly(t *testing.T) {
 			if code != 0 {
 				t.Fatalf("退出码 %d：%s", code, out)
 			}
-			var cli readContextOut
+			var cli ctxpack.Out
 			if err := json.Unmarshal([]byte(out), &cli); err != nil {
 				t.Fatal(err)
 			}
@@ -119,7 +122,7 @@ func TestContextPackRefusalMatchesMCP(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("拒的时候退出码该是 1（脚本得看得见），实际 %d", code)
 	}
-	var cli readContextOut
+	var cli ctxpack.Out
 	if err := json.Unmarshal([]byte(out), &cli); err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +145,7 @@ func TestContextPackScopesToOneDomain(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("退出码 %d：%s", code, out)
 	}
-	var got readContextOut
+	var got ctxpack.Out
 	if err := json.Unmarshal([]byte(out), &got); err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +167,7 @@ func TestContextPackUnknownWhoIsNotAParamError(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("退出码 %d，期望 1", code)
 	}
-	var got readContextOut
+	var got ctxpack.Out
 	if err := json.Unmarshal([]byte(out), &got); err != nil {
 		t.Fatal(err)
 	}
@@ -209,6 +212,134 @@ func TestContextPackWritesNothing(t *testing.T) {
 func TestContextPackMissingWhoIsUsageError(t *testing.T) {
 	if code := quiet(t, func() int { return cmdContextPack([]string{copyFixture(t, "domains")}) }); code != 2 {
 		t.Fatalf("没给 --who 该是用法错（2），实际 %d", code)
+	}
+}
+
+// ---------- 冻结副本（`anc context freeze`）----------
+//
+// 这一刀把「形态」那一半也补上了：pack 只打 stdout，freeze 另冻一份进 vault 的 context/。
+// 两条不变量各有用例钉着 ——
+//  1 冻下来那一份与 pack 的 stdout **除末尾换行外逐字节相同**（对不上号的副本比没有更坏）；
+//  2 拒了**就不冻**（没有可交付的上下文，就不该在落点留个空壳）。
+
+// ctxFreeze 跑一次 CLI，回 (stdout, 退出码)。
+func ctxFreeze(t *testing.T, vault string, extra ...string) (string, int) {
+	t.Helper()
+	args := append(append([]string{}, extra...), vault)
+	return captureStdout(t, func() int { return cmdContextFreeze(args) })
+}
+
+// 冻下来的那一份 = pack 打的那一份（除末尾换行）：同一个装配点、同一次序列化。
+func TestContextFreezeWritesWhatPackPrints(t *testing.T) {
+	vault := copyFixture(t, "domains")
+	who := "alice"
+
+	packed, code := ctxPack(t, vault, "--who", who)
+	if code != 0 {
+		t.Fatalf("pack 退出码 %d", code)
+	}
+	_, code = ctxFreeze(t, vault, "--who", who)
+	if code != 0 {
+		t.Fatalf("freeze 退出码 %d", code)
+	}
+
+	// 默认落点 = <vault>/context/<编号>.json，且文件名用**解出来的编号**（不是 --who 的原样）。
+	path := filepath.Join(vault, "context", who+".json")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("默认落点里没有冻结副本：%v", err)
+	}
+	if string(b) != packed+"\n" {
+		t.Fatalf("冻下来的那份与 stdout 上那份对不上：\n文件: %q\nstdout: %q", string(b), packed)
+	}
+}
+
+// 只写落点那一份，别的一个字节都不动 —— 「冻副本」不是「改真相源」的入口。
+func TestContextFreezeWritesExactlyOneFile(t *testing.T) {
+	vault := copyFixture(t, "domains")
+	before := vaultFingerprint(t, vault)
+	if _, code := ctxFreeze(t, vault, "--who", "alice"); code != 0 {
+		t.Fatalf("退出码 %d", code)
+	}
+	if after := vaultFingerprint(t, vault); after == before {
+		t.Fatal("冻了一份副本，指纹却一点没变 —— 这份没真落下去")
+	}
+	// 挪走落点，指纹应当逐字节回到冻结之前：换句话说，动过的**只有**落点。
+	frozen := filepath.Join(vault, "context", "alice.json")
+	body, err := os.ReadFile(frozen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(frozen); err != nil {
+		t.Fatal(err)
+	}
+	if after := vaultFingerprint(t, vault); after != before {
+		t.Fatalf("除了落点那一份，别的地方也被动过了：\n前: %s\n后: %s", before, after)
+	}
+	if len(body) == 0 {
+		t.Fatal("冻出来的是个空文件")
+	}
+}
+
+// 拒了就不冻：越域、查无此人，两种都不该在落点留个空壳。
+func TestContextFreezeRefusalWritesNothing(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		args []string
+	}{
+		{"越域", []string{"--who", "alice", "--domain", "logistics"}},
+		{"查无此人", []string{"--who", "查无此人"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			vault := copyFixture(t, "domains")
+			before := vaultFingerprint(t, vault)
+			if _, code := ctxFreeze(t, vault, c.args...); code != 1 {
+				t.Fatalf("拒的时候退出码该是 1（脚本得看得见），实际 %d", code)
+			}
+			if after := vaultFingerprint(t, vault); after != before {
+				t.Fatal("拒了却写了东西 —— 落点里不该有半份上下文")
+			}
+			if _, err := os.Stat(filepath.Join(vault, "context")); err == nil {
+				t.Fatal("拒了却把落点目录建出来了")
+			}
+		})
+	}
+}
+
+// 要单独一域时文件名带上那一段，免得把「全部」那一份悄悄盖掉。
+func TestContextFreezeScopedNameAndOverrideDir(t *testing.T) {
+	vault := copyFixture(t, "domains")
+	if _, code := ctxFreeze(t, vault, "--who", "alice", "--domain", "trade"); code != 0 {
+		t.Fatalf("退出码 %d", code)
+	}
+	if _, err := os.Stat(filepath.Join(vault, "context", "alice.trade.json")); err != nil {
+		t.Fatalf("单独一域的那份该叫 alice.trade.json：%v", err)
+	}
+	// --to 换个落点：交给调用方定（交付包里常要落到别处）。
+	elsewhere := t.TempDir()
+	if _, code := ctxFreeze(t, vault, "--who", "alice", "--to", elsewhere); code != 0 {
+		t.Fatalf("退出码 %d", code)
+	}
+	if _, err := os.Stat(filepath.Join(elsewhere, "alice.json")); err != nil {
+		t.Fatalf("--to 指定的落点里没有那份：%v", err)
+	}
+}
+
+// 落点不进路由表：它是算出来的快照，不是「人把资料放进来、agent 去查」的地方 ——
+// 进了 persona 段 3 的数据来源，等于给 agent 指错路。
+func TestContextDirIsNotRouted(t *testing.T) {
+	vault := copyFixture(t, "domains")
+	if _, code := ctxFreeze(t, vault, "--who", "alice"); code != 0 {
+		t.Fatalf("退出码 %d", code)
+	}
+	o, err := org.Load(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range o.Routing {
+		if r.Dir == org.ContextDir {
+			t.Fatalf("落点进了数据路由表：%+v", o.Routing)
+		}
 	}
 }
 

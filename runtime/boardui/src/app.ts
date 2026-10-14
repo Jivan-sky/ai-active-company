@@ -153,6 +153,34 @@ type HotView = {
   total: number; stale: number; entries: HotEntryView[]; note: string;
 };
 
+// 工作上下文（`/api/context`，schema = anc.context/v1）—— 「一个 agent 的工作上下文是什么」。
+//
+// 字段名与后端（internal/ctxpack）**一字不差**：那一份同时是 agent 那条路上的契约
+// （MCP 回给 harness 的就是它）。看板不另立一份字段表 —— 另立一份迟早跟那边对不上号。
+type CtxEvidence = { file: string; line: number };
+type CtxIdentity = {
+  kind: string; ref: string; name?: string; role?: string;
+  domain?: string; domain_name?: string; inscription?: string; evidence?: CtxEvidence;
+};
+type CtxDomain = {
+  slug: string; name: string; what: string; data?: string; who: string;
+  terms?: string; sources?: string; evidence: CtxEvidence;
+};
+type CtxBrief = { slug: string; name: string; what: string; who: string };
+type CtxSkill = { name: string; where: string; missing?: boolean };
+type CtxProject = {
+  slug: string; name: string; owner?: string; period?: string; source?: string; evidence: CtxEvidence;
+};
+type CtxPack = {
+  who?: string; identity?: CtxIdentity; on_behalf_of?: string; scope?: string;
+  domains?: CtxDomain[]; directory?: CtxBrief[]; skills?: CtxSkill[]; projects?: CtxProject[];
+  gaps?: string[]; note?: string; refused?: { reason: string; ask?: string }; at: string;
+};
+type ContextView = {
+  schema: string; who: string; domain: string;
+  roster: CtxIdentity[]; pack?: CtxPack; error?: string; note: string;
+};
+
 type Data = {
   board: BoardView | null; issues: Issues;
   hot: HotView | null; hotErr: string;
@@ -162,6 +190,7 @@ type Data = {
   timeline: TimelineView | null; timelineErr: string;
   audit: AuditView | null; auditErr: string;
   approvals: ApprovalView | null; approvalsErr: string;
+  context: ContextView | null; contextErr: string;
   err: string;
 };
 
@@ -235,6 +264,10 @@ function sourceCell(v: string): Kid {
   if (!/^https?:\/\//i.test(s)) return el("span", { class: "mono" }, s);
   return el("a", { href: s, target: "_blank", rel: "noreferrer noopener" }, s);
 }
+
+// 证据指针：指回真相源的那一行（vault 相对路径 + 行号）—— 照着能回去核，不是本机路径。
+const ptr = (e: CtxEvidence | undefined): Kid =>
+  e && (e.file ?? "") !== "" ? el("span", { class: "mono nw" }, e.file + ":" + e.line) : "—";
 
 function findingLine(f: Finding): Kid {
   const where = (f.where ?? "").trim();
@@ -321,7 +354,7 @@ function contract<T extends { schema?: string }>(res: Fetched<T>, label: string)
 }
 
 async function fetchData(): Promise<Data> {
-  const [boardRes, issuesRes, runtimeRes, dataflowRes, assetsRes, timelineRes, auditRes, approvalsRes, hotRes] = await Promise.all([
+  const [boardRes, issuesRes, runtimeRes, dataflowRes, assetsRes, timelineRes, auditRes, approvalsRes, hotRes, ctxRes] = await Promise.all([
     getJSON<BoardView & { error?: string }>("/api/board"),
     getJSON<Issues>("/api/issues"),
     getJSON<RuntimeView>("/api/runtime"),
@@ -333,6 +366,9 @@ async function fetchData(): Promise<Data> {
     getJSON<AuditView>("/api/audit?limit=500"),
     getJSON<ApprovalView>("/api/approvals"),
     getJSON<HotView>("/api/hot"),
+    // 上下文那一页：选中的人进 hash（#/context?who=alice），所以取数也照 URL 来 ——
+    // 刷新、把链接发给别人、前进后退，看到的都是同一个人。
+    getJSON<ContextView>("/api/context" + ctxQuery()),
   ]);
   const issues = issuesRes.body ?? emptyIssues(issuesRes.err);
   const rt = contract(runtimeRes, "运行态");
@@ -342,11 +378,13 @@ async function fetchData(): Promise<Data> {
   const au = contract(auditRes, "审计");
   const ap = contract(approvalsRes, "待批队列");
   const ho = contract(hotRes, "热层");
+  const cx = contract(ctxRes, "工作上下文");
   const schema = boardRes.body?.schema;
   if (boardRes.body && typeof schema === "string" && schema !== "") {
     return {
       board: boardRes.body, issues, err: "",
       hot: ho.v, hotErr: ho.err,
+      context: cx.v, contextErr: cx.err,
       runtime: rt.v, runtimeErr: rt.err,
       dataflow: df.v, dataflowErr: df.err,
       assets: as.v, assetsErr: as.err,
@@ -359,6 +397,7 @@ async function fetchData(): Promise<Data> {
   return {
     board: null, issues, err: why,
     hot: ho.v, hotErr: ho.err,
+    context: cx.v, contextErr: cx.err,
     runtime: rt.v, runtimeErr: rt.err,
     dataflow: df.v, dataflowErr: df.err,
     assets: as.v, assetsErr: as.err,
@@ -1241,7 +1280,185 @@ const assetsPage: Page = {
   id: "assets", group: "原料", label: "沉淀", wired: true,
   question: "手上有什么料、沉淀到哪一层了？", view: renderAssets,
 };
+// 上下文 —— 读者：FDE / 想看清「这个 agent 眼里的世界」的人。
+// 排在「项目」后面：一个讲「有哪几件事」，一个讲「接进去的那个人看到的边界是什么」。
+const contextPage: Page = {
+  id: "context", group: "组织", label: "上下文", wired: true,
+  question: "一个 agent 的工作上下文是什么？", view: renderContext,
+};
 
+// ---------- 上下文页：一个 agent 的工作上下文 ----------
+//
+// 读者：FDE / 想看清「这个 agent 眼里的世界」的人。
+//
+// 这一页**不另立一套字段**：后端 /api/context 回的 pack 就是 internal/ctxpack 那两份结构，
+// 也就是 harness 走 MCP 要的那一份、`anc context pack` 打的那一份 —— 同一份上下文，换一个摆法。
+//
+// 选中谁进 URL（`#/context?who=alice&domain=trade`）：刷新、把链接发给别人、前进后退，
+// 都还停在那个人 / 那一域上。这一页**只读**：一个字都不写回真相源。
+
+function ctxQuery(): string {
+  const q = hashQuery();
+  const who = (q.get("who") ?? "").trim();
+  const domain = (q.get("domain") ?? "").trim();
+  const p = new URLSearchParams();
+  if (who !== "") p.set("who", who);
+  if (domain !== "") p.set("domain", domain);
+  const s = p.toString();
+  return s === "" ? "" : "?" + s;
+}
+
+function ctxHref(who: string, domain = ""): string {
+  const p = new URLSearchParams({ who });
+  if (domain !== "") p.set("domain", domain);
+  return "#/context?" + p.toString();
+}
+
+function ctxChip(label: string, href: string, on: boolean, mono = false): HTMLElement {
+  const attrs: Attrs = { class: mono ? "chip mono" : "chip", href };
+  if (on) attrs["aria-current"] = "true";
+  return el("a", attrs, label);
+}
+
+function ctxWhoSection(v: ContextView): Kid {
+  if (v.roster.length === 0) {
+    return section("可以看谁", "名单来自真相源（members/ 与 agents.md）",
+      emptyNote("真相源里没有成员，也没有业务 agent。"));
+  }
+  const row = el("div", { class: "legend" });
+  for (const e of v.roster) {
+    const name = (e.name ?? "").trim();
+    const label = name !== "" && name !== e.ref ? name + " · " + e.ref : dash(e.ref);
+    row.append(ctxChip(label, ctxHref(e.ref), e.ref === v.who, e.kind === "agent"));
+  }
+  const out: Kid[] = [section("可以看谁",
+    "名单来自真相源：成员 bot 与业务 agent 接在同一张口上 —— 「这是谁」也是真相源说的，不许自报",
+    row)];
+  // 范围：不写 domain = 它负责的全部域；写一个 = 只要那一块（同 CLI 的 --domain）。
+  const p = v.pack;
+  if (p && !p.refused && p.who) {
+    const scopes = el("div", { class: "legend" },
+      ctxChip("全部域", ctxHref(p.who), v.domain === ""));
+    for (const d of p.domains ?? []) {
+      scopes.append(ctxChip(d.name + " · " + d.slug, ctxHref(p.who, d.slug), v.domain === d.slug, true));
+    }
+    out.push(section("看多大范围", "要单独一域时不给别域目录、也不附通用报缺",
+      p.domains && p.domains.length > 0 ? scopes : emptyNote("这个人名下还没有域，所以没有范围可选。")));
+  }
+  return el("div", {}, ...out);
+}
+
+function ctxIdentitySection(p: CtxPack): Kid {
+  const id = p.identity;
+  if (!id) {
+    return section("身份", "这一份里没有身份那一块", emptyNote("——"));
+  }
+  const rows: Array<[string, Kid]> = [
+    ["类型", id.kind === "agent" ? "业务 agent · 代岗位" : "成员 bot · 代人"],
+    ["编号", el("span", { class: "mono" }, dash(id.ref))],
+    ["显示名", dash(id.name)],
+    ["岗位", dash(id.role)],
+    ["归属", id.domain ? dash(id.domain_name) + "（" + id.domain + "）" : cannot("没划域 —— 没有域就没有数据视野")],
+    ["铭文", id.inscription ? dash(id.inscription) : cannot("没有铭文（成员 bot 不在这张表上）")],
+  ];
+  if (id.evidence) {
+    rows.push(["铭文出处", el("span", { class: "mono" }, id.evidence.file + ":" + id.evidence.line)]);
+  }
+  return section("身份", "三格全部来自真相源：归属取自域表，铭文取自 agents.md",
+    el("div", { class: "grid" }, card(dash(id.name), id.kind, rows)));
+}
+
+function ctxDomainsSection(p: CtxPack): Kid {
+  const rows: Kid[][] = (p.domains ?? []).map((d) => [
+    el("span", { class: "mono nw" }, d.slug), dash(d.name), dash(d.what),
+    el("span", { class: "mono nw" }, dash(d.data)), dash(d.who),
+    dash(d.terms), dash(d.sources), ptr(d.evidence),
+  ]);
+  return section("业务域（你负责的）", "全行：域是什么 / 数据在哪 / 找谁 / 指回真相源的那一行",
+    rows.length === 0
+      ? emptyNote(p.note !== "" && p.note !== undefined ? p.note : "没有域 —— 公司还没给你划域。")
+      : table(["slug", "名称", "是什么", "数据在哪", "找谁", "术语口径", "来源", "证据"], rows));
+}
+
+function ctxDirectorySection(p: CtxPack): Kid {
+  const rows: Kid[][] = (p.directory ?? []).map((d) => [
+    el("span", { class: "mono nw" }, d.slug), dash(d.name), dash(d.what), dash(d.who),
+  ]);
+  return section("别域（只给「找谁」）", "跨域按「找谁」接头 —— 走人，不走近道（数据默认不通）",
+    rows.length === 0 ? emptyNote("没有别域。") : table(["slug", "名称", "是什么", "找谁"], rows));
+}
+
+function ctxSkillsSection(p: CtxPack): Kid {
+  const rows: Kid[][] = (p.skills ?? []).map((s) => [
+    el("span", { class: "mono nw" }, s.name),
+    el("span", { class: "mono nw" }, s.where),
+    s.missing ? cannot("正文还没落") : "在",
+  ]);
+  return section("技能从哪来", "清单在 roles/<岗位> 的 skills:，正文在 skills/<名>/SKILL.md",
+    rows.length === 0
+      ? emptyNote("这个岗位在 roles/ 里没声明 skills —— 不是「没有技能」，是「没登记」。")
+      : table(["技能", "正文指针", "正文"], rows));
+}
+
+function ctxProjectsSection(p: CtxPack): Kid {
+  const rows: Kid[][] = (p.projects ?? []).map((x) => [
+    el("span", { class: "mono nw" }, x.slug), dash(x.name), dash(x.owner),
+    dash(x.period), sourceCell(x.source ?? ""), ptr(x.evidence),
+  ]);
+  return section("在跟的项目", "只列你可见域上的；period / source 原样搬（它们本身是指针，ANC 不解读）",
+    rows.length === 0
+      ? emptyNote("你可见的域上还没挂项目。")
+      : table(["slug", "项目", "负责人", "周期", "真源", "证据"], rows));
+}
+
+function ctxGapsSection(p: CtxPack): Kid {
+  const gaps = p.gaps ?? [];
+  return section("这份上下文答不了什么", "报缺，不编 —— 读的人据此知道该去问谁，而不是以为这就是全部",
+    gaps.length === 0
+      ? emptyNote("没报缺：要么都答上了，要么这次只问了一域（那就不附通用报缺）。")
+      : el("ul", {}, ...gaps.map((g) => el("li", {}, g))));
+}
+
+function renderContext(d: Data): Kid[] {
+  const v = d.context;
+  if (!v) {
+    return [banner("bad", "读不到工作上下文", [
+      el("span", {}, d.contextErr === "" ? "服务没回 anc.context/v1" : d.contextErr)])];
+  }
+  const out: Kid[] = [];
+  if ((v.error ?? "") !== "") {
+    out.push(banner("bad", "真相源读不动", [el("span", {}, dash(v.error))]));
+  }
+  out.push(ctxWhoSection(v));
+  const p = v.pack;
+  if (!p) {
+    out.push(section("挑一个", "选中的人进 URL：刷新、分享、前进后退都还停在同一个人身上",
+      emptyNote("还没有选。上面挑一个 —— 这一页会摆出它眼里的世界。")));
+    return out;
+  }
+  if (p.refused) {
+    out.push(banner("warn", "没答出来", [
+      el("span", {}, dash(p.refused.reason)),
+      p.refused.ask ? el("span", {}, "该找谁：" + p.refused.ask) : "",
+    ]));
+    out.push(section("这一页不做什么", "拒了就是拒了 —— 不给半份数据",
+      emptyNote("被拒的那一次照样是一次「想行使」：它记在审计流水里，不记在这一页上。")));
+    return out;
+  }
+  out.push(ctxIdentitySection(p));
+  out.push(ctxDomainsSection(p));
+  out.push(ctxDirectorySection(p));
+  out.push(ctxSkillsSection(p));
+  out.push(ctxProjectsSection(p));
+  out.push(ctxGapsSection(p));
+  out.push(section("这一份是什么时候算的", "投影是纯函数产物：同一份真相源，谁算都一样",
+    el("p", { class: "empty" },
+      "算于 " + (p.at ? localTime(p.at) : "—") +
+      (p.scope ? "，范围只到 " + p.scope + " 这一域" : "，范围是它负责的全部域") + "。",
+      "这一页只摆出来看，不落盘；要一份冻住的副本用 ", el("span", { class: "mono" }, "anc context freeze"),
+      "（落 vault 的 context/，进 git）。")));
+  return out;
+}
 // ---------- 沉淀柱（口径图） ----------
 //
 // 「沉淀」页那根柱**不是统计**，它画的是四层的分工：
@@ -1417,7 +1634,7 @@ function paintSediment(scope: HTMLElement, motion: boolean): void {
     stream.append(tk);
   });
 }
-const PAGES: Page[] = [overviewPage, approvalsPage, orgPage, projectsPage, timelinePage, auditPage, runtimePage, dataflowPage, assetsPage];
+const PAGES: Page[] = [overviewPage, approvalsPage, orgPage, projectsPage, contextPage, timelinePage, auditPage, runtimePage, dataflowPage, assetsPage];
 
 function pageFor(id: string): Page {
   for (const p of PAGES) if (p.id === id) return p;
@@ -1584,6 +1801,22 @@ async function boot(force = false): Promise<void> {
   shell();
 }
 
-window.addEventListener("hashchange", () => { shell(); });
+// 上下文那一页的取数：换人 / 换范围时就重取那一份（其余几份不用动）。
+// 只重取它自己，不是整页重取 —— 这一页的选择是**参数**，不是刷新。
+async function loadContext(): Promise<void> {
+  const res = await getJSON<ContextView>("/api/context" + ctxQuery());
+  const cx = contract(res, "工作上下文");
+  if (cache) cache = { ...cache, context: cx.v, contextErr: cx.err };
+  shell();
+}
+
+window.addEventListener("hashchange", () => {
+  // 这一页的「选中谁」在 hash 里：进了这一页就按 URL 重取一次，别的页照旧（取数只在启动 / 刷新）。
+  if (pageFor(currentId()).id === "context") {
+    void loadContext();
+    return;
+  }
+  shell();
+});
 
 void boot();

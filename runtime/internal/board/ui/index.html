@@ -305,6 +305,12 @@
   button.act.reject { color: #8a3026; background: #fdf1ee; }
   button.act.hold { color: #6d4f10; background: #fdf6e6; }
 
+  /* ---------- 上下文页：选人 / 选范围就是一行 chip（链接，不是按钮） ---------- */
+  a.chip { color: var(--ink-2); }
+  a.chip:hover { color: var(--accent-3); text-decoration: none; box-shadow: var(--lift-2); }
+  a.chip[aria-current="true"] { color: var(--accent-3); font-weight: 560; box-shadow: var(--lift-2); }
+  /* 标识符不该被列宽切成两半（slug / 证据指针）；.tw 本来就能横向滚，不会撑破整页 */
+  .nw { white-space: nowrap; }
   /* 时间线页：一个 case 一个原生 <details> 折叠（不写 JS），summary 里点 + 字一行排 */
   details { margin-top: 12px; }
   details > summary { cursor: pointer; padding: 7px 2px; }

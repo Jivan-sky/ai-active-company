@@ -153,6 +153,12 @@ func cmdOrgInit(args []string) int {
 		fmt.Fprintf(os.Stderr, "错误：%v\n", err)
 		return 1
 	}
+	// 工作上下文冻结副本的落点：与 charters/ 同一类 —— 落点先建好、说明先写好，
+	// 冻不冻、冻几份是运行态的事。
+	if err := write("context-dir-CLAUDE.md.tmpl", "context/CLAUDE.md", nil); err != nil {
+		fmt.Fprintf(os.Stderr, "错误：%v\n", err)
+		return 1
+	}
 	if err := write("role-manager.md.tmpl", "roles/manager/persona.md",
 		map[string]string{"{{ROLE_TITLE}}": "经理"}); err != nil {
 		fmt.Fprintf(os.Stderr, "错误：%v\n", err)
@@ -236,7 +242,9 @@ func cmdOrgInit(args []string) int {
 	fmt.Println("   3) 每个数据目录的 CLAUDE.md 首句会进 persona 路由表，写清楚它才找得着路。")
 	fmt.Println("   4) 立项书副本放 charters/<slug>/（目录名 = projects.md 的 slug）；")
 	fmt.Println("      真源在客户侧，projects.md 的 source 列指向它。")
-	fmt.Printf("   5) anc org check %s\n", abs)
+	fmt.Println("   5) 工作上下文要冻一份存档就落 context/：anc context freeze <vault> --who <编号>；")
+	fmt.Println("      只是要看一眼就去看板的「上下文」页（同一份装配，换一个摆法）。")
+	fmt.Printf("   6) anc org check %s\n", abs)
 
 	if *doGit {
 		if _, err := exec.LookPath("git"); err != nil {

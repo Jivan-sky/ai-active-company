@@ -26,6 +26,7 @@ func TestOrgInitProducesUsableVault(t *testing.T) {
 		"domains.md",
 		"projects.md",
 		"charters/CLAUDE.md",
+		"context/CLAUDE.md",
 		"roles/manager/persona.md",
 		"roles/devbot/persona.md",
 		"members/alice/persona.md",

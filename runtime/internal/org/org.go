@@ -182,6 +182,13 @@ func (h Host) AgentHome(slug string) (string, bool) {
 //     它回答「谁被允许做什么」——SPEC §3：真相源仓库 ≠ bot 的工作区）、
 //     audit（行使的流水 —— SPEC §6 不变量 4：**系统记下来的**，不是给人放业务资料的地方。
 //     它比 timeline 更敏感：含「谁想碰什么」，注册进路由表等于把审计面摊给 agent，见议题 #43）。
+//
+// ContextDir 是工作上下文**冻结副本**的落点（vault 顶层；`anc context freeze` 往这里写）。
+//
+// 名字跟 charters 是同一族：一个落「客户那边同步过来的副本」，一个落「我们这边算出来的快照」。
+// 两者都不是真相源，所以都不进路由表（见下面的 skipDirs）。
+const ContextDir = "context"
+
 var skipDirs = map[string]bool{
 	// 结构目录（SPEC §4.3）
 	"roles": true, "members": true, "skills": true, "company": true,
@@ -189,6 +196,11 @@ var skipDirs = map[string]bool{
 	// 本库的落点
 	"docs": true, "_originals": true, "charters": true, "timeline": true, "grants": true,
 	"audit": true,
+	// context 是**算出来的**工作上下文冻结副本（`anc context freeze` 的落点）。
+	// 它比 charters 更该被挡住：charters 至少是「客户那边的文件同步过来的」，
+	// 这一份压根不是谁放进来的资料，是投影冻住的一刻 —— 进路由表等于让 agent
+	// 照着一份会过期的快照去找业务资料。
+	"context": true,
 }
 
 var (

@@ -193,6 +193,8 @@ func usage() {
                                     第二条网关的收口环：吃一行一条的事件流（stdin），落痕 + 收口
   anc context pack <vault> --who <编号> [--domain <slug>]
                                     一个 agent 的工作上下文（只读投影：身份 / 业务域 / 数据源 / 可见范围 / 技能 / 项目）
+  anc context freeze <vault> --who <编号> [--domain <slug>] [--to <目录>]
+                                    把这一份冻成副本落 vault 的 context/（快照；给交付与审计取证）
   anc version
 
 三层客户（九宫格判层，先判层再定打法，答错层＝后面全错）：
