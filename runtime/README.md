@@ -566,6 +566,28 @@ anc_read_context(who, on_behalf_of?, domain?)                                   
 —— `tools/list` 两个工具都在；`who=alice, domain=logistics`（跨域）回 `refused` 且 `audit/` 里落一条 `denied`；
 `who=nobody` 回「我们公司没有这个人」；四种请求的回话里都搜不到 vault 绝对路径与盘符。
 
+### 工作上下文包（`anc context pack`）
+
+```
+anc context pack <vault> --who <编号> [--domain <slug>]
+```
+
+一个 agent 的**工作上下文** —— 身份 / 业务域 / 数据源 / 可见范围 / 技能来源 / 在跟的项目 ——
+**按需算出来的一份只读投影**（议题 #53）。
+
+- **不新增真相源**：真相源仍是 vault 里的 markdown（persona 各段 / `domains.md` / `projects.md` /
+  `roles.skills` 清单 + `skills/*/SKILL.md` 正文）。这份包是**纯函数产物**，**不落盘常贮** ——
+  存下来就成了第三处会漂移的源。要一份冻结副本，自己重定向（同 `anc org export` 的规矩）。
+- **一个装配点、两个出口**：它与 harness 走 MCP 调的 `anc_read_context` **共用同一个函数**
+  （`assembleContext`）—— CLI 打的那一份与 MCP 回的那一份**除回答时刻外逐字段相同**（有用例盯着）。
+  给 agent 走 MCP，给人 / 给交付走 CLI。
+- **缺项报缺**：`gaps` 明说这份上下文答不了什么（技能正文没落 / 没挂项目 / 新鲜度 / 版本），**不编**。
+- **只读**：一个字不写回真相源，也不落 `audit/` —— 留痕是「一次行使」的账，挂在 MCP 那个入口上；
+  这是操作者在自己机器上打一份投影，性质同 `anc org export`。
+- **要单独一域**（`--domain`）就只给那一行：不塞「找谁」目录，也不塞通用报缺。
+- 退出码：`0` 答出来了 · `1` 拒了（这个人不存在 / 越域 / 署名解不出）或真相源读不了 · `2` 用法错。
+- 设计记录见 `DESIGN.md` §7.1.47。
+
 **接法（不变量）已定形**（2026-10-09）：`../SPEC.md` **§4.7** —— 网关 **G1–G4** + 四条禁令、
 harness **H1–H4**、业务 agent 独立账号的五件套。判据一句话：**换一个网关、加一条 harness 腿，
 是「加一张表 + 一个适配器」，不是重写一套。**
@@ -741,9 +763,10 @@ pwsh -File build.ps1 -Only local  # 只编本机 windows/amd64
 | 路径 | 说明 |
 |---|---|
 | `DESIGN.md` | 运行层落地设计 v0.1（草案；D4/D5/D6 已拍板，D1/D2 未拍板） |
-| `main.go` | 装配器（`init` / `doctor` / `assets` / `render` / `apply` / `probe` / `notify` / `trail` / `timeline` / `hot` / `envelope` / `gate` / `gateway` / `board` / `org` / `version`） |
+| `main.go` | 装配器（`init` / `doctor` / `assets` / `render` / `apply` / `probe` / `notify` / `trail` / `timeline` / `hot` / `envelope` / `gate` / `gateway` / `context` / `board` / `org` / `version`） |
 | `render.go` | `anc render` / `anc org check` 的 CLI（dry-run 默认、原子写、两道差分门） |
 | `board.go` | `anc org export` 的 CLI（只读投影，无写操作） |
+| `context.go` | `anc context pack` 的 CLI（一个 agent 的工作上下文：只读投影，与 MCP 出口同一个装配点） |
 | `org.go` | `anc org who` 的 CLI（平台身份 → 谁；只查表，不猜） |
 | `internal/board/` | org 真相源 → 看板消费的只读 JSON（纯函数，不含凭据面字段） |
 | `internal/board/server.go` | 看板的只读 HTTP 出口（GET / HEAD；投影 + 校验发现） |

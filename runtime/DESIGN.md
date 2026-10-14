@@ -2621,6 +2621,52 @@ A/B 对照跑的是**同一条脚本**、两个二进制：基线 = 从 `git arc
 ② 重拨只在**下一次调用**发生，不做后台探活；
 ③ 只在 Windows + WSL2 redis 上实测过，macOS 侧未测（没机器）。
 
+### 7.1.47 工作上下文包：一个装配点、两个出口（2026-10-14，议题 #53）
+
+议题 #53 有两半，**人已经拍了前一半**（2026-10-09 的评论）：真相源就是 vault 本身（不新增文件格式）·
+把「项目」与「技能正文」补进上下文 · 组装点**只做一个**（并进 `anc_read_context` 的同一次调用）·
+没有真相源的（新鲜度 / 版本）**报缺，不编**。后来代码把这四条都落了
+（`envelope_read.go`：`identity` / `domains` / `directory` / `skills` / `projects` / `gaps`），
+**唯一还悬着的是「这份上下文落到哪种形态」** —— 分析结论也写在同一条评论里：**按需生成，不落盘常贮**。
+
+这一刀就收这个尾：给它一个**载体**，且不新开第二个装配点。
+
+| 住哪 | 是什么 |
+|---|---|
+| `envelope_read.go` 的 `assembleContext(o, vault, who, onBehalf, ask, now)` | **唯一一个装配点**：解身份 → 按可见范围取 域 / 目录 / 技能 / 项目 → 报缺。回 `(readContextOut, 拒没拒)` |
+| `envelope_read.go` 的 `readContext` | MCP 那个出口：调装配 + 真相源读不出来时的报错口径 + 每次调用一条 `audit` 痕（**行为一个字没变**，抽函数时逐条对齐过） |
+| `context.go` | CLI 那个出口：`anc context pack <vault> --who <编号> [--domain <slug>]` |
+
+**两条不变量，各有用例钉着**：
+
+| 不变量 | 为什么 |
+|---|---|
+| 两个出口**除回答时刻外逐字段相同**（`TestContextPackAndMCPAreOneAssembly`，成功与拒绝两条路都盖） | 两份装配迟早对不上号，而「对不上号的工作上下文」比没有更坏 —— 读的人以为看到的就是全的 |
+| 投影**只读**：真相源一个字节不动（`TestContextPackWritesNothing`，全树指纹前后相同） | 纯函数产物只要存一次、改一次，就成了第三处会漂移的源 |
+
+**为什么 CLI 不留痕**：`audit` 记的是「一次**行使**」—— 谁向平台要了什么；那条账挂在 MCP 那个入口上。
+CLI 是操作者**在自己机器上**打一份投影（同 `anc org export`，它也不留痕），不是 agent 在平台上行使。
+所以**写入面一个口子都没多**：多的是一个只读出口，不是一条新的写路径。
+
+**实测（本机 Windows 11，真起二进制跑真 fixture；非单元测试）**：
+
+| 判据 | 结果 |
+|---|---|
+| 五问 + 项目 | ✅ `--who alice`：`identity`（member / trade / manager）· `domains`（含 `data` / `who` / `terms` / `sources`，指针 `domains.md:8`）· `directory`（别域只给「找谁」）· `skills`（`where` + `missing:true`）· `projects`（`projects.md:7`）· `gaps` 4 条 |
+| 越域 | ✅ `--domain logistics` → 退出码 1 + 拒话「不在你的可见范围（数据默认不通）」+ 指路 `ask`「运营（Bob Li）」；stdout 里**没有**别人的 `data` |
+| 不存在的人 | ✅ 退出码 1；拒话里没有「参数 / 格式 / schema」这类词（他是**不在这家公司**，不是写错了参数） |
+| stdout 纯度 | ✅ 恒为合法 JSON，且搜不到 vault 绝对路径与盘符 |
+| 用法错 | ✅ 不给 `--who` → 退出码 2（与「这个人不存在」分开报） |
+| 用例 | ✅ `runtime/context_cli_test.go` 9 条 |
+| 质量门 | ✅ `gofmt -l .` 无输出 · `go vet ./...` 无输出 · `go test ./... -count=1` 18 包全绿 |
+
+#### 这一刀没做的
+
+① **形态本身仍待拍**：这份包现在只有「stdout 上的 JSON」一种落法。真要落成 vault 里的一份文件、
+或看板上的一页（W4 的「看板分视图」），那是另一刀 —— 本刀不动真相源，所以两种都接得上；
+② `on_behalf_of`（署名）只在 MCP 那条路上开，CLI 没开 —— 等真有人要用再加，不预设；
+③ 看板还没有这一页（`/api/context`）。
+
 ## 8. 与 SPEC 的映射
 
 | 本文 | SPEC |

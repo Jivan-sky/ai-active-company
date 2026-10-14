@@ -137,6 +137,9 @@ type readRefusalOut struct {
 
 // readContext 是工具实现：解身份 → 按可见范围组一份 JSON → 落一条痕。
 //
+// 装配那一半在 assembleContext（**唯一一个装配点** —— `anc context pack` 走的是同一个函数）；
+// 这里只多做两件事：真相源读不出来时的报错口径，和每一次出站调用的留痕。
+//
 // isErr=true 的三种情形都是「没办成」而不是「工具坏了」：这个人不存在 / on_behalf_of 解不出 /
 // 要的是别人的域。三种都留痕 —— 被拒的那次同样是「一次想行使」。
 func (g *envelopeIngress) readContext(args map[string]any) (string, bool) {
@@ -151,27 +154,50 @@ func (g *envelopeIngress) readContext(args map[string]any) (string, bool) {
 		return "真相源加载失败，读不了：" + err.Error() + "\n（先修 org：anc org check <vault>）", true
 	}
 
+	out, refused := assembleContext(o, g.Vault, who, onBehalf, ask, now)
+
+	// 留痕：谁 / 要什么 / 给没给 / 为什么拒。被拒的那次同样是「一次想行使」。
+	// 身份都没解出来那一次，账记在「报上来的那个名字」（清洗后）或 unknown 上 —— 一次都不许静默不记。
+	actor := out.Who
+	if actor == "" {
+		actor = readActor(who)
+	}
+	if refused {
+		g.auditRead(actor, ask, audit.ResultDenied, out.Refused.Reason, now)
+	} else {
+		g.auditRead(actor, ask, audit.ResultOK, "", now)
+	}
+	return mustJSON(out), refused
+}
+
+// assembleContext 是「一个 agent 的工作上下文」**唯一一个装配点**。
+//
+// 两个出口共用它：MCP 的 anc_read_context（agent 来要）与 `anc context pack`（人看 / 交付要一份冻结副本）。
+// 装配只有一份，才不会出现「MCP 说的工作上下文」与「CLI 打的那一份」对不上号 ——
+// 同一把尺子（VisibleDomainsOf）、同一套身份解析（o.Identity）、同一份报缺口径。
+//
+// 它只做装配：不加载真相源、不留痕、不打印 —— 那三样两个出口各有各的交代方式。
+// 回 (这一份上下文, 是不是拒了)。拒了的时候 out.Refused 有理由，数据一格都没有。
+func assembleContext(o *org.Org, vault, who, onBehalf, ask string, now time.Time) (readContextOut, bool) {
 	// 身份：解不出（含压根没给）→ **当这个人不存在**。所以理由里不许出现「参数错误」
 	// 这类话 —— 那会把读的人引去改参数，而问题是他不在这家公司（envelope 包注释第 1 条）。
 	subj, ok := o.Identity(who)
 	if !ok {
 		reason := "我们公司没有这个人 —— 身份不许自报：who 必须能在 members/ 或 agents.md 里解出来"
-		g.auditRead(readActor(who), ask, audit.ResultDenied, reason, now)
-		return mustJSON(readContextOut{
+		return readContextOut{
 			Refused: &readRefusalOut{Reason: reason},
 			At:      now.Format(time.RFC3339),
-		}), true
+		}, true
 	}
 
 	// 署名（可选）：给了就必须解得出来 —— 同一套身份解析（envelope.Resolves），不另开一套。
 	if onBehalf != "" && !envelope.Resolves(o, onBehalf) {
 		reason := "on_behalf_of 解不出 —— 写 member:名字 | role:岗位 | domain:slug，或直接写名字"
-		g.auditRead(subj.Ref, ask, audit.ResultDenied, reason, now)
-		return mustJSON(readContextOut{
+		return readContextOut{
 			Who: subj.Ref, OnBehalfOf: onBehalf,
 			Refused: &readRefusalOut{Reason: reason},
 			At:      now.Format(time.RFC3339),
-		}), true
+		}, true
 	}
 
 	mine, others := renderpkg.VisibleDomainsOf(o, subj.Domains)
@@ -188,12 +214,11 @@ func (g *envelopeIngress) readContext(args map[string]any) (string, bool) {
 		}
 		if len(chosen) == 0 {
 			reason, helper := refuseDomain(o, ask)
-			g.auditRead(subj.Ref, ask, audit.ResultDenied, reason, now)
-			return mustJSON(readContextOut{
+			return readContextOut{
 				Who: subj.Ref, OnBehalfOf: onBehalf,
 				Refused: &readRefusalOut{Reason: reason, Ask: helper},
 				At:      now.Format(time.RFC3339),
-			}), true
+			}, true
 		}
 	}
 
@@ -215,16 +240,13 @@ func (g *envelopeIngress) readContext(args map[string]any) (string, bool) {
 
 	// 「工作上下文」的另两问：技能从哪来、在跟哪个项目。
 	// 都走已经算好的 chosen（可见范围）—— 项目按域过滤，域不在范围里就不出现。
-	out.Skills = skillsOf(o, subj.Role, g.Vault)
+	out.Skills = skillsOf(o, subj.Role, vault)
 	out.Projects = projectRows(o, chosen)
 	// 报缺只在要「全部」时给：要单独一域的人不该被一段通用说明淹掉。
 	if ask == "" {
 		out.Gaps = contextGaps(out)
 	}
-
-	// 给了也要留痕 —— 审计不是只记拒绝。
-	g.auditRead(subj.Ref, ask, audit.ResultOK, "", now)
-	return mustJSON(out), false
+	return out, false
 }
 
 // refuseDomain 组「这块业务不在你的可见范围」这句拒话。两种情况分开：
