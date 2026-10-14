@@ -46,7 +46,7 @@ func (g *envelopeIngress) readContext(args map[string]any) (string, bool) {
 		return "真相源加载失败，读不了：" + err.Error() + "\n（先修 org：anc org check <vault>）", true
 	}
 
-	out, refused := ctxpack.Assemble(o, g.Vault, who, onBehalf, ask, now)
+	out, refused := ctxpack.Assemble(o, g.Vault, who, onBehalf, ask, now, g.tasks())
 
 	// 留痕：谁 / 要什么 / 给没给 / 为什么拒。被拒的那次同样是「一次想行使」。
 	// 身份都没解出来那一次，账记在「报上来的那个名字」（清洗后）或 unknown 上 —— 一次都不许静默不记。
@@ -60,6 +60,25 @@ func (g *envelopeIngress) readContext(args map[string]any) (string, bool) {
 		g.auditRead(actor, ask, audit.ResultOK, "", now)
 	}
 	return mustJSON(out), refused
+}
+
+// tasks 读热层里那一摞当前值 —— 「派给我的待办」这一块的输入。
+//
+// 读不出来**不编**：Wired=false，装配点据此报缺（「这一段答不了」），
+// 绝不拿一份空清单冒充「没人派给你」。**原因是环境的**，不进契约（三个出口的报缺文案
+// 必须一模一样）—— 它打 stderr，说给人听。
+func (g *envelopeIngress) tasks() ctxpack.TasksIn {
+	if g.Hot == nil {
+		// 没配这一层：起服务那一步已经报过一次了（「注意：热层没接上（…）」），不在这儿重复刷。
+		return ctxpack.TasksIn{}
+	}
+	states, err := g.Hot.List()
+	if err != nil {
+		// 读不出来是**运行中**发生的事（起服务时是好的），得喊一声 —— 静默就会变成假绿。
+		fmt.Fprintf(os.Stderr, "注意：热层读不出来（%v）—— 「派给我的待办」这一段会如实报缺。\n", err)
+		return ctxpack.TasksIn{}
+	}
+	return ctxpack.TasksIn{Rows: states, Wired: true}
 }
 
 // auditRead 给一次出站调用留一条痕：谁 / 要什么 / 给没给 / 为什么拒。

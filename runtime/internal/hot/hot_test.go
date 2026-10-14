@@ -314,6 +314,17 @@ func TestListScansAndReads(t *testing.T) {
 	}
 }
 
+// nil 的 Store 真被调到了，要回一句人话，不许当场 panic：调用方要是把「没接上」写成一个
+// 「装着 nil 指针的接口」，`if x == nil` 判不出来 —— 那一下就会打到这儿。
+// （读出口那条路真踩过：MCP 接入面在热层没接上时直接断连。）
+func TestListOnNilStoreSaysSo(t *testing.T) {
+	var st *Store
+	_, err := st.List()
+	if err == nil || !strings.Contains(err.Error(), "热层没开") {
+		t.Fatalf("nil 的 Store 该回一句人话，实际：%v", err)
+	}
+}
+
 func TestGetMissingIsNotAnError(t *testing.T) {
 	st, _ := fakeStore(t, "*0\r\n")
 	_, ok, err := st.Get("nope")

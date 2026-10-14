@@ -12,10 +12,12 @@ package ctxpack
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	"anc/internal/envelope"
+	"anc/internal/hot"
 	"anc/internal/org"
 	renderpkg "anc/internal/render"
 )
@@ -33,6 +35,8 @@ type Out struct {
 	Directory  []BriefOut   `json:"directory,omitempty"`    // 别域目录：只有名称 / 是什么 / 找谁
 	Skills     []SkillOut   `json:"skills,omitempty"`       // 岗位声明的技能（正文在不在，逐条标）
 	Projects   []ProjectOut `json:"projects,omitempty"`     // 挂在你可见域上的项目
+	Todo       []TaskOut    `json:"todo,omitempty"`         // 派给我的待办（热层 to == 我）；只读，不在这儿改状态
+	Doing      []TaskOut    `json:"doing,omitempty"`        // 我正在做的（热层 by == 我）
 	Gaps       []string     `json:"gaps,omitempty"`         // 这份上下文答不了什么（报缺，不编）
 	Note       string       `json:"note,omitempty"`         // 只在「还没给你划域」时出现
 	Refused    *Refusal     `json:"refused,omitempty"`      // 拒：不给数据，给理由（能指路就指路）
@@ -102,6 +106,42 @@ type ProjectOut struct {
 	Evidence *Evidence `json:"evidence"`
 }
 
+// TaskOut 是「一件进行中的事」在一个人眼里长什么样 —— ANC 侧那个任务本体（住热层，见 internal/hot）。
+//
+// 它**不是真相源**，也不是这份上下文现有的那几问之一：它是**反向下发**的那一步。
+// ANC 不能主动往 agent 的会话里插话（插了就是打断：上一条还没跑完，第二条已经在改前提了），
+// 所以「派活」拆成两件**各自可替换**的事：**决定派给谁**（ANC 的活，落在热层）+
+// **让对方开始动**（对方自己的活 —— 它在自己的会话里 pull，pull 到了才开始）。
+// 这一块就是那个 pull：agent 会话一开始要一次上下文，「派给我的」就在里面。
+//
+// 状态**原样给**：热层里 `status` 是什么就摆什么（done / running / blocked / failed，认不出的照收）。
+// 哪些算「还没做完」是业务口径 —— 不在这层判（同 hot 包「认不出的照收」）。
+type TaskOut struct {
+	ID      string `json:"id"` // 与 timeline 的 case id 同一个 —— 一份 id 贯穿热层与真相源
+	Title   string `json:"title,omitempty"`
+	Status  string `json:"status,omitempty"`
+	By      string `json:"by,omitempty"` // 谁在做
+	To      string `json:"to,omitempty"` // 下一手该交给谁
+	Domain  string `json:"domain,omitempty"`
+	Project string `json:"project,omitempty"`
+	Note    string `json:"note,omitempty"`
+	AsOf    string `json:"as_of,omitempty"` // 这个当前值是「什么时候的」—— 新鲜度靠它，不靠 TTL
+}
+
+// TasksIn 是「派给我的待办」这一块的输入：热层当前值的一份快照。
+//
+// 为什么**传进来**而不是在这里读：装配点要一直是**纯函数**（不加载、不留痕、不打印）。
+// 热层接没接上由三个出口各自交代，装配点只负责如实摆出来 —— 读不出来就报缺，
+// 拿一份空清单冒充「没人派给你」，正是这个系统最怕的那种假绿。
+//
+// **就一个 Wired，不带原因**：原因（没配 / 连不上 / 读错）是**环境的**，各出口各说各话 ——
+// 一进契约，三个出口的报缺文案就会各飘各的，「三处逐字段相同」当场作废。
+// 原因说给人听，去处是各出口自己的台面：CLI / MCP 打 stderr，看板在起服务时先说一遍。
+type TasksIn struct {
+	Rows  []hot.State
+	Wired bool // 这一层接上了没有（读到了才算）；false = 这一段答不了 —— 空清单 ≠ 没人派给你
+}
+
 // Refusal 是「没答出来」的那一格里的话：不给数据，给理由（能指路就指路）。
 type Refusal struct {
 	Reason string `json:"reason"`
@@ -140,7 +180,7 @@ func IdentityOf(o *org.Org, idn org.Identity) *IdentityOut {
 //
 // 它只做装配：不加载真相源、不留痕、不打印 —— 那三样各出口有各自的交代方式。
 // 回 (这一份上下文, 是不是拒了)。拒了的时候 out.Refused 有理由，数据一格都没有。
-func Assemble(o *org.Org, vault, who, onBehalf, ask string, now time.Time) (Out, bool) {
+func Assemble(o *org.Org, vault, who, onBehalf, ask string, now time.Time, tasks TasksIn) (Out, bool) {
 	// 自由文本（要哪个域）在**装配这一层**就压成能回显的短串：三个入口各清一遍，
 	// 迟早有一边忘了清 —— 那一边的回话里就会出现控制字符或一整段注入文本。清一次，三边都干净。
 	ask = SafeToken(ask)
@@ -208,9 +248,15 @@ func Assemble(o *org.Org, vault, who, onBehalf, ask string, now time.Time) (Out,
 	// 都走已经算好的 chosen（可见范围）—— 项目按域过滤，域不在范围里就不出现。
 	out.Skills = skillsOf(o, subj.Role, vault)
 	out.Projects = projectRows(o, chosen)
+	// 「派给我的待办」（反向下发的那一步）。同目录 / 报缺那条纪律：只在要「全部」时给 ——
+	// 单域问就是「只要那一块业务的那一行」，不把与那一块无关的东西塞进去。
+	// 判据只有一条：热层的 to / by 是不是**解出来的主体编号**（署名不参与这一块）。
+	if ask == "" {
+		out.Todo, out.Doing = taskRows(subj.Ref, tasks)
+	}
 	// 报缺只在要「全部」时给：要单独一域的人不该被一段通用说明淹掉。
 	if ask == "" {
-		out.Gaps = contextGaps(out)
+		out.Gaps = contextGaps(out, tasks)
 	}
 	return out, false
 }
@@ -287,10 +333,44 @@ func projectRows(o *org.Org, chosen []renderpkg.DomainRow) []ProjectOut {
 	return out
 }
 
+// taskRows 把热层那一摞当前值挑成「派给我的」与「我在做的」两摞。
+//
+// 两条口径：
+//   - 匹配的是**解出来的主体编号**（subj.Ref），不是请求里报上来的那个拼法 —— 同身份那条纪律。
+//   - 状态一条都不筛：热层里还留着一条 done，说明它还没清走（达标是「先落库、再清热层」），
+//     那不是这一层该替人做的判断。
+func taskRows(ref string, tasks TasksIn) (todo, doing []TaskOut) {
+	for _, st := range tasks.Rows {
+		if st.ID == "" {
+			continue
+		}
+		row := TaskOut{
+			ID: st.ID, Title: st.Title, Status: st.Status, By: st.By, To: st.To,
+			Domain: st.Domain, Project: st.Project, Note: st.Note, AsOf: st.AsOf,
+		}
+		if st.To == ref {
+			todo = append(todo, row)
+		}
+		if st.By == ref {
+			doing = append(doing, row)
+		}
+	}
+	// 热层的列举走 SCAN，顺序不保证：这里定死一个（编号升序）——
+	// 三个出口要「除回答时刻外逐字段相同」，就不能让顺序飘。
+	sort.Slice(todo, func(i, j int) bool { return todo[i].ID < todo[j].ID })
+	sort.Slice(doing, func(i, j int) bool { return doing[i].ID < doing[j].ID })
+	return todo, doing
+}
+
 // contextGaps 明说「这份上下文答不了什么」。**只列没有真相源的那几样** ——
 // 不编、也不假装完整：读的人据此知道该去问谁，而不是以为这就是全部。
-func contextGaps(out Out) []string {
+func contextGaps(out Out, tasks TasksIn) []string {
 	var g []string
+	// 热层没接上 = 这一段答不了。**必须与「没人派给你」分开说** ——
+	// 否则读的人会拿一份「看不到」当成「没有」，那正是假绿。
+	if !tasks.Wired {
+		g = append(g, "派给我的待办：热层没接上 —— 这一段答不了，**不是**「没人派给你」")
+	}
 	if len(out.Skills) == 0 {
 		g = append(g, "技能：这个岗位在 roles/<role> 里没声明 skills（不是「没有技能」，是「没登记」）")
 	}

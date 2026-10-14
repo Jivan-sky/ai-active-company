@@ -171,14 +171,26 @@ type CtxSkill = { name: string; where: string; missing?: boolean };
 type CtxProject = {
   slug: string; name: string; owner?: string; period?: string; source?: string; evidence: CtxEvidence;
 };
+// 一件「进行中的事」（反向下发那一步的任务本体，住热层）。字段名与后端 internal/ctxpack.TaskOut
+// 一字不差 —— 它同时是 agent 那条路上的契约（MCP 回给 harness 的就是它）。
+type CtxTask = {
+  id: string; title?: string; status?: string; by?: string; to?: string;
+  domain?: string; project?: string; note?: string; as_of?: string;
+};
 type CtxPack = {
   who?: string; identity?: CtxIdentity; on_behalf_of?: string; scope?: string;
   domains?: CtxDomain[]; directory?: CtxBrief[]; skills?: CtxSkill[]; projects?: CtxProject[];
+  todo?: CtxTask[]; doing?: CtxTask[];
   gaps?: string[]; note?: string; refused?: { reason: string; ask?: string }; at: string;
 };
 type ContextView = {
   schema: string; who: string; domain: string;
   roster: CtxIdentity[]; pack?: CtxPack; error?: string; note: string;
+  // tasks_wired / tasks_why：「派给我的待办 / 我在做的」这两摞问出来没有 ——
+  // 「热层没接上」与「没人派给你」在这一页上必须是两句话。
+  tasks_wired: boolean; tasks_why?: string;
+  // 状态 → 配色档。词表在后端（internal/timeline.Band），这一页不另抄一份。
+  task_bands?: Record<string, string>;
 };
 
 type Data = {
@@ -1411,6 +1423,30 @@ function ctxProjectsSection(p: CtxPack): Kid {
       : table(["slug", "项目", "负责人", "周期", "真源", "证据"], rows));
 }
 
+// 「派给我的待办 / 我在做的」—— 反向下发的那一步落在一个人眼里长什么样。
+//
+// 为什么是这两摞而不是一张任务表：ANC **不往 agent 的会话里插话**（插了就是打断），
+// 派活拆成两件各自可替换的事 —— 决定派给谁（ANC 的活，落在热层）、让对方开始动（对方 pull）。
+// 这一块就是那个 pull 的可见面：会话一开始要一次上下文，「派给我的」就在里面。
+// 看板这一页只摆出来看：不认领、不改状态（要动是 `anc hot` 那边的事）。
+function ctxTasksSection(
+  list: CtxTask[] | undefined, bands: Record<string, string> | undefined,
+  title: string, hint: string, emptyWhat: string,
+): Kid {
+  const rows: Kid[][] = (list ?? []).map((t) => [
+    dotLine(bandDot(bands?.[t.id] ?? "unknown"), statusCell(t.status)),
+    el("div", {}, el("span", { class: "mono" }, dash(t.id)), el("div", {}, dash(t.title))),
+    handOff(t.by, t.to),
+    dash([t.domain, t.project].filter((x) => (x ?? "").trim() !== "").join(" · ")),
+    t.as_of ? localTime(t.as_of) : cannot("没写 as_of"),
+    (t.note ?? "").trim() === "" ? "" : el("p", { class: "empty" }, dash(t.note)),
+  ]);
+  return section(title, hint,
+    rows.length === 0
+      ? emptyNote(emptyWhat)
+      : table(["档 / status", "编号 · 这一件", "谁 → 交给谁", "业务域 · 项目", "当前值是什么时候的", "备注"], rows));
+}
+
 function ctxGapsSection(p: CtxPack): Kid {
   const gaps = p.gaps ?? [];
   return section("这份上下文答不了什么", "报缺，不编 —— 读的人据此知道该去问谁，而不是以为这就是全部",
@@ -1446,6 +1482,23 @@ function renderContext(d: Data): Kid[] {
     return out;
   }
   out.push(ctxIdentitySection(p));
+  // 反向下发的那一半：agent 自己 pull 到的就是这两摞。
+  // 热层没接上时**不摆空列表** —— 那会把「看不到」读成「没有」，正是这一页最该防的假绿。
+  if (!v.tasks_wired) {
+    out.push(banner("warn", "派给我的待办：这一段答不了", [
+      el("span", {}, dash(v.tasks_why)),
+      el("br"),
+      el("span", {}, "接不上不代表「没人派给你」—— 这一页宁可不显示，也不拿一份空清单冒充它。"),
+    ]));
+  } else {
+    out.push(ctxTasksSection(p.todo, v.task_bands, "派给我的待办",
+      "热层的 to = 你。这一页只读：派谁、派什么在 ANC 那边，改状态用 anc hot",
+      "没人派给你 —— 热层接上了，里面确实没有 to 是你的。"));
+    out.push(ctxTasksSection(p.doing, v.task_bands, "我在做的",
+      "热层的 by = 你。状态原样摆（done / running / blocked / failed，认不出的照收）",
+      "你手上没有在做的 —— 热层接上了，里面确实没有 by 是你的。"));
+    if ((p.todo ?? []).length + (p.doing ?? []).length > 0) out.push(bandLegend());
+  }
   out.push(ctxDomainsSection(p));
   out.push(ctxDirectorySection(p));
   out.push(ctxSkillsSection(p));

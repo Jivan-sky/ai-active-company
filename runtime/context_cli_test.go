@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"anc/internal/ctxpack"
+	"anc/internal/hot"
 	"anc/internal/org"
 )
 
@@ -24,8 +25,53 @@ import (
 // MCP 的 anc_read_context 与 `anc context pack` 打出来的必须是同一份（除回答时刻外逐字段相同）——
 // 两份装配迟早会对不上号，而「对不上号的工作上下文」比没有更坏：读的人以为看到的就是全的。
 
+// stubHot 换掉 CLI 那道热层口（见 context.go 里 readHotTasks 那道缝）。
+//
+// 用例**默认都不碰真的热层**：这台机器上有 redis、另一台没有，那是两种结果 ——
+// 用例跟着本机装没装 redis 变，就成了假绿。要验「接上了」那条路，用 withHot 显式喂一份。
+func stubHot(t *testing.T, in ctxpack.TasksIn) {
+	t.Helper()
+	old := readHotTasks
+	readHotTasks = func(contextArgs) (ctxpack.TasksIn, func()) { return in, func() {} }
+	t.Cleanup(func() { readHotTasks = old })
+}
+
+// fakeHotList 是一份假热层：出口只问 List 这一件事。
+type fakeHotList struct{ states []hot.State }
+
+func (f *fakeHotList) List() ([]hot.State, error) { return f.states, nil }
+
+// sampleTasks 是三件「进行中的事」：两件与 alice 有关（一件派给她、一件她在做），
+// 一件是 bob 的 —— 那件不该出现在 alice 那一份里。
+// 顺序**故意不是**编号序：顺带钉住「三个出口连顺序都一样」。
+func sampleTasks() []hot.State {
+	return []hot.State{
+		{ID: "case-2", Status: "running", Title: "把 Q3 结算的差异对一遍", To: "alice", Domain: "trade", AsOf: "2026-10-17T02:00:00+08:00"},
+		{ID: "case-1", Status: "blocked", Title: "等船公司回 ETA", By: "alice", Note: "卡在外部", AsOf: "2026-10-16T20:00:00+08:00"},
+		{ID: "case-9", Status: "running", Title: "bob 的事", To: "bob", By: "bob", AsOf: "2026-10-17T01:00:00+08:00"},
+	}
+}
+
+// withHot 给两个出口喂**同一份**热层：MCP 那个入口挂上假的那份，CLI 那道口换成同一份。
+// 不这么喂，「逐字段相同」这条不变量就验不成 —— 两边输入不一样时，比出来的差别是环境的，
+// 不是装配的。
+func withHot(t *testing.T, g *envelopeIngress, states []hot.State) {
+	t.Helper()
+	g.Hot = &fakeHotList{states: states}
+	stubHot(t, ctxpack.TasksIn{Rows: states, Wired: true})
+}
+
 // ctxPack 跑一次 CLI，回 (stdout, 退出码)。
+// 它自己把热层那道口换成「没接上」：大多数用例只想看装配的其它几格，
+// 不想让本机装没装 redis 混进来。要验热层那一段，用 ctxPackOnWire —— 喂什么由调用方定。
 func ctxPack(t *testing.T, vault string, extra ...string) (string, int) {
+	t.Helper()
+	stubHot(t, ctxpack.TasksIn{})
+	return ctxPackOnWire(t, vault, extra...)
+}
+
+// ctxPackOnWire 同上，但**不碰**热层那道口：调用方自己用 withHot / stubHot 喂。
+func ctxPackOnWire(t *testing.T, vault string, extra ...string) (string, int) {
 	t.Helper()
 	args := append(append([]string{}, extra...), vault)
 	return captureStdout(t, func() int { return cmdContextPack(args) })
@@ -77,7 +123,8 @@ func TestContextPackAnswersTheFiveQuestions(t *testing.T) {
 // 核心不变量：CLI 打的那一份与 MCP 回的那一份**逐字段相同**（回答时刻除外）。
 // 一个装配点、两个出口 —— 哪天有人给 CLI 单开一条近路，这条用例就该红。
 func TestContextPackAndMCPAreOneAssembly(t *testing.T) {
-	h, _ := readHarness(t)
+	h, g := readHarness(t)
+	withHot(t, g, sampleTasks())
 	for _, ask := range []string{"", "trade"} {
 		t.Run("domain="+ask, func(t *testing.T) {
 			args := map[string]any{"who": "alice"}
@@ -91,7 +138,7 @@ func TestContextPackAndMCPAreOneAssembly(t *testing.T) {
 			if ask != "" {
 				cliArgs = append(cliArgs, "--domain", ask)
 			}
-			out, code := ctxPack(t, copyFixture(t, "domains"), cliArgs...)
+			out, code := ctxPackOnWire(t, copyFixture(t, "domains"), cliArgs...)
 			if code != 0 {
 				t.Fatalf("退出码 %d：%s", code, out)
 			}
@@ -105,7 +152,69 @@ func TestContextPackAndMCPAreOneAssembly(t *testing.T) {
 			if !reflect.DeepEqual(mcp, cli) {
 				t.Fatalf("两个出口打出来的不是同一份：\nMCP: %+v\nCLI: %+v", mcp, cli)
 			}
+			if ask != "" {
+				// 单域问本来就不捎待办（同「找谁」目录那条纪律）—— 两个出口已经比对过，
+				// 逐字段相同，所以只在一边断一次就够。
+				if len(cli.Todo) != 0 || len(cli.Doing) != 0 {
+					t.Fatalf("单域问不该捎待办：%+v", cli)
+				}
+				return
+			}
+			// 顺带把「派给我的待办」那一段也钉住：两件是我的（一件派给我、一件我在做），
+			// 一件是 bob 的 —— 别人的事一个字段都不许漏进来。
+			if len(cli.Todo) != 1 || cli.Todo[0].ID != "case-2" {
+				t.Fatalf("派给我的待办不对：%+v", cli.Todo)
+			}
+			if len(cli.Doing) != 1 || cli.Doing[0].ID != "case-1" {
+				t.Fatalf("我在做的那些不对：%+v", cli.Doing)
+			}
+			if todo, doing := cli.Todo[0], cli.Doing[0]; strings.Contains(todo.Title+doing.Title, "bob") {
+				t.Fatal("别人的事漏进来了")
+			}
 		})
+	}
+}
+
+// 热层没接上：这一段**报缺** —— 不许拿一份空清单冒充「没人派给你」。
+// 这是这一刀最要紧的一条：「看不到」与「没有」在这份契约里必须是两句话。
+func TestContextPackSaysWhenHotIsNotWired(t *testing.T) {
+	stubHot(t, ctxpack.TasksIn{})
+	out, code := ctxPack(t, copyFixture(t, "domains"), "--who", "alice")
+	if code != 0 {
+		t.Fatalf("退出码 %d：%s", code, out)
+	}
+	var got ctxpack.Out
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Todo) != 0 || len(got.Doing) != 0 {
+		t.Fatalf("热层没接上，却给出了待办：%+v", got)
+	}
+	var said bool
+	for _, g := range got.Gaps {
+		if strings.Contains(g, "热层没接上") && strings.Contains(g, "答不了") {
+			said = true
+		}
+	}
+	if !said {
+		t.Fatalf("热层没接上却没说清「这一段答不了」：%v", got.Gaps)
+	}
+}
+
+// 单域问就只答那一块：待办不该跟着进来（同「找谁」目录与通用报缺那条纪律）。
+func TestContextPackScopedAskCarriesNoTasks(t *testing.T) {
+	g := &envelopeIngress{}
+	withHot(t, g, sampleTasks())
+	out, code := ctxPackOnWire(t, copyFixture(t, "domains"), "--who", "alice", "--domain", "trade")
+	if code != 0 {
+		t.Fatalf("退出码 %d：%s", code, out)
+	}
+	var got ctxpack.Out
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Todo) != 0 || len(got.Doing) != 0 {
+		t.Fatalf("单域问不该捎待办：%+v", got)
 	}
 }
 
@@ -210,6 +319,7 @@ func TestContextPackWritesNothing(t *testing.T) {
 
 // 没给 --who 是用法错（退出码 2），不是「这个人不存在」—— 两件事分开报。
 func TestContextPackMissingWhoIsUsageError(t *testing.T) {
+	stubHot(t, ctxpack.TasksIn{})
 	if code := quiet(t, func() int { return cmdContextPack([]string{copyFixture(t, "domains")}) }); code != 2 {
 		t.Fatalf("没给 --who 该是用法错（2），实际 %d", code)
 	}
@@ -225,6 +335,7 @@ func TestContextPackMissingWhoIsUsageError(t *testing.T) {
 // ctxFreeze 跑一次 CLI，回 (stdout, 退出码)。
 func ctxFreeze(t *testing.T, vault string, extra ...string) (string, int) {
 	t.Helper()
+	stubHot(t, ctxpack.TasksIn{})
 	args := append(append([]string{}, extra...), vault)
 	return captureStdout(t, func() int { return cmdContextFreeze(args) })
 }

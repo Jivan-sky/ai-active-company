@@ -199,6 +199,12 @@ func (st *Store) Get(id string) (State, bool, error) {
 // List 列举所有「进行中」的条目（最久没动的在前）。
 // 用 SCAN 而不是 KEYS：KEYS 在生产上会把整个 redis 卡住。
 func (st *Store) List() ([]State, error) {
+	// nil 接收者：正常写法不该走到这儿（没接上就该让那口一直空着）。但真被调到了，
+	// 这里回一句人话，别当场 panic —— 调用方`var st *hot.Store`直接塞进接口时，
+	// `== nil` 判不出来，读出口那一整条路会连回话都发不出去（真踩过）。
+	if st == nil {
+		return nil, errors.New("热层没开：Store 是 nil —— 调用方把「没接上」写成了「接上了」")
+	}
 	keys, err := st.scan(scanPattern(st.prefix))
 	if err != nil {
 		return nil, err

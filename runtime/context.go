@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"anc/internal/ctxpack"
+	"anc/internal/hot"
 	"anc/internal/org"
 )
 
@@ -20,9 +21,16 @@ anc context freeze <vault> --who <编号> [--domain <slug>] [--to <目录>]
   它与 harness 走 MCP 调的 anc_read_context、看板的「上下文」页是**同一个装配点**
   （ctxpack.Assemble）：三个出口，一份上下文。
 
-  --who <编号>     成员名（members/<名>）或业务 agent 的 slug（agents.md）
-  --domain <slug>  只要这一块业务；不写 = 它负责的全部域（外加「找谁」目录）
-  --to <目录>      冻结副本落到哪（只有 freeze 有这一项）；不写 = <vault>/context
+  还捎上「派给我的待办」（热层里 to / by 指向你的那些）—— **反向下发**就靠这一块：
+  agent 在自己的会话里 pull，ANC 不去插话、不去打断。任务本体住热层（当前值），
+  达标的落 timeline（历史）。**热层接不上不编**：报缺说「这一段答不了」，
+  不拿空清单冒充「没人派给你」。
+
+  --who <编号>        成员名（members/<名>）或业务 agent 的 slug（agents.md）
+  --domain <slug>     只要这一块业务；不写 = 它负责的全部域（外加「找谁」目录）
+  --hot-addr <地址>   热层地址（「派给我的待办」从这儿来）；默认 127.0.0.1:6379，也可用 ANC_HOT_ADDR
+  --hot-prefix <前缀> 热层 key 前缀；默认 anc，也可用 ANC_HOT_PREFIX
+  --to <目录>         冻结副本落到哪（只有 freeze 有这一项）；不写 = <vault>/context
 
   pack    只打 stdout，一个字不落盘 —— 投影是纯函数产物，存下来就成第三处会漂移的源。
   freeze  另冻一份**副本**到 <vault>/context/<编号>[-<slug>].json（进 git，给交付与审计取证）。
@@ -57,12 +65,14 @@ func cmdContext(args []string) int {
 	return 2
 }
 
-// contextArgs 是 pack 与 freeze 共用的那几项：vault 位置、who、domain。
+// contextArgs 是 pack 与 freeze 共用的那几项：vault 位置、who、domain、热层。
 // 两个动词的入参口径必须一样 —— 各写一遍，迟早只有一边跟得上（本仓库付过学费的那类）。
 type contextArgs struct {
-	vault  string
-	who    string
-	domain string
+	vault     string
+	who       string
+	domain    string
+	hotAddr   string
+	hotPrefix string
 }
 
 // parseContextArgs 解析 `<vault> --who --domain [--to]`。to 只在 freeze 用得上，
@@ -71,6 +81,8 @@ func parseContextArgs(name string, args []string, to *string) (contextArgs, int)
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	who := fs.String("who", "", "编号：成员名或业务 agent 的 slug（必填）")
 	domain := fs.String("domain", "", "只要这一块业务（slug）；不写 = 它负责的全部域")
+	hotAddr := fs.String("hot-addr", "", "热层地址（「派给我的待办」用它；默认 "+hot.DefaultAddr+"；也可用 ANC_HOT_ADDR）")
+	hotPrefix := fs.String("hot-prefix", "", "热层 key 前缀（默认 "+hot.DefaultPrefix+"；也可用 ANC_HOT_PREFIX）")
 	var toFlag *string
 	if to != nil {
 		toFlag = fs.String("to", "", "冻结副本的落点目录（默认 <vault>/context）")
@@ -91,7 +103,31 @@ func parseContextArgs(name string, args []string, to *string) (contextArgs, int)
 		fmt.Fprintf(os.Stderr, "错误: %v\n", err)
 		return contextArgs{}, 2
 	}
-	return contextArgs{vault: abs, who: *who, domain: *domain}, 0
+	return contextArgs{vault: abs, who: *who, domain: *domain, hotAddr: *hotAddr, hotPrefix: *hotPrefix}, 0
+}
+
+// readHotTasks 是给「派给我的待办」读热层的那一道口。
+//
+// 做成变量是为了用例能换掉它：热层那条路要验「接上了」与「没接上」两档，
+// 而为了这个在用例里起一个假 redis 不值当（同 board.Server.Now 那个注入口的用意）。
+// 也正因为换得掉，「三个出口逐字段相同」这条不变量才验得动 —— 两个出口喂同一份输入。
+var readHotTasks = func(a contextArgs) (ctxpack.TasksIn, func()) {
+	noop := func() {}
+	st, err := hot.Open(hot.Config{
+		Addr:   firstNonEmpty(a.hotAddr, os.Getenv("ANC_HOT_ADDR"), hot.DefaultAddr),
+		Prefix: firstNonEmpty(a.hotPrefix, os.Getenv("ANC_HOT_PREFIX")),
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "注意：热层没接上（%v）—— 「派给我的待办」这一段只能报缺（那不是「没人派给你」）。\n", err)
+		return ctxpack.TasksIn{}, noop
+	}
+	states, err := st.List()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "注意：热层读不出来（%v）—— 「派给我的待办」这一段只能报缺。\n", err)
+		_ = st.Close()
+		return ctxpack.TasksIn{}, noop
+	}
+	return ctxpack.TasksIn{Rows: states, Wired: true}, func() { _ = st.Close() }
 }
 
 // loadContextOrg 读真相源。读不了 = 红档，退出码 1（与「拒了」同一个号：都是没办成）。
@@ -119,7 +155,9 @@ func cmdContextPack(args []string) int {
 	}
 	// domain 不清洗：清洗就发生在装配那一层（ctxpack.SafeToken），三个入口共用同一处，
 	// 免得「只在一边生效」。
-	out, refused := ctxpack.Assemble(o, a.vault, a.who, "", a.domain, time.Now())
+	tasks, done := readHotTasks(a)
+	defer done()
+	out, refused := ctxpack.Assemble(o, a.vault, a.who, "", a.domain, time.Now(), tasks)
 	fmt.Print(mustJSON(out))
 	if refused {
 		// 拒不是「工具坏了」，但确实没答出来 —— 给脚本一个看得见的信号（与 MCP 的 isError 对齐）。
@@ -145,7 +183,9 @@ func cmdContextFreeze(args []string) int {
 	if code != 0 {
 		return code
 	}
-	out, refused := ctxpack.Assemble(o, a.vault, a.who, "", a.domain, time.Now())
+	tasks, done := readHotTasks(a)
+	defer done()
+	out, refused := ctxpack.Assemble(o, a.vault, a.who, "", a.domain, time.Now(), tasks)
 	if refused {
 		fmt.Fprintln(os.Stderr, "没冻：这一份没答出来 —— 没有可交付的上下文，就没有可冻的东西。")
 		if out.Refused != nil {

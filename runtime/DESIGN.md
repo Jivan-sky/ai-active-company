@@ -2746,6 +2746,88 @@ anc context freeze <vault> --who <编号> [--domain <slug>] [--to <目录>]
 | 用例 | ✅ `internal/board/context_test.go` 5 条 + `context_cli_test.go` freeze 4 条 |
 | 质量门 | ✅ `gofmt -l .` 无输出 · `go vet ./...` 无输出 · `go test ./... -count=1` 18 包全绿 |
 
+### 7.1.49 反向下发第一刀：读出口捎上「派给我的待办」（2026-10-14/15，议题 #58）
+
+议题 #58 的形态人已经拍过：**ANC 不能主动往 agent 的会话里插话**（插了就是打断 —— 上一条还没跑完，
+第二条已经在改前提了），所以「派活」拆成两件**各自可替换**的事：
+
+| 那件事 | 谁的活 | 落在哪 |
+|---|---|---|
+| 决定派给谁 / 派什么 | **ANC**（人提、被派的域 owner 点头） | 热层（任务本体，带保鲜期） |
+| 让对方开始动 | **对方自己**（它在自己会话里 pull，pull 到了才开始） | 会话开头要一次上下文 —— 这一刀让它 pull 得到 |
+
+所以这一刀**不做**：不新增协议面、不动 MCP 那个无状态子集、不往任何会话里推东西。
+只做**「pull 得到」**这一半：工作上下文里多两格。
+
+**契约多两格（`ctxpack.Out`）**
+
+| 那一格 | 是什么 | 判据 |
+|---|---|---|
+| `todo` | 派给我的待办 | 热层 `to` == **解出来的主体编号**（`subj.Ref`） |
+| `doing` | 我正在做的 | 热层 `by` == `subj.Ref` |
+
+`TaskOut` 的字段就是热层那条记录本身（`id/title/status/by/to/domain/project/note/as_of`），
+**不加工**。四条口径，逐条都有理由：
+
+| 口径 | 定法 | 为什么 |
+|---|---|---|
+| 匹配用 `subj.Ref`，不用请求里那个拼法 | 同「身份不许自报」那条 | 请求可以写别名，编号只有一个 |
+| 状态**一条都不筛** | 热层里还留着一条 `done` 说明它还没清走 | 「达标 = 先落库、再清热层」（§7.1.31 那条：`anc hot done` 的顺序是先落库、再清热层），那不归装配这层判 |
+| 顺序**定死**（编号升序） | `sort.Slice` | 热层 `List()` 走 SCAN，顺序不保证；三处出口要「除回答时刻外逐字段相同」，顺序就不能飘 |
+| 单域问（`--domain`）**不捎** | `if ask == ""` 才填 | 同「找谁」目录那条纪律：要单独一块的人不该被别的东西淹掉 |
+
+**为什么输入只带一个 `Wired`、不带原因**（`ctxpack.TasksIn`）：原因是**环境的**（没配 / 连不上 / 读错），
+一进契约，三个出口的报缺文案就会各飘各的，「三处逐字段相同」当场作废。原因说给人听，去处是各出口
+自己的台面：CLI / MCP 打 stderr，看板在回话里单给一格（下面）。
+
+**热层没接上 = 报缺，不许空着**（这一刀最要紧的一条）：`gaps` 最前面多一条
+「派给我的待办：热层没接上 —— 这一段答不了，**不是**「没人派给你」」。
+拿一份空清单冒充「没人派给你」正是这个系统最怕的那种假绿 —— 空清单在任何一份回话里都长一样。
+
+**三个出口各自的接线**
+
+| 出口 | 怎么接上热层 | 接不上时 |
+|---|---|---|
+| MCP（`anc envelope serve`） | 新增 `--hot-addr` / `--hot-prefix`（也认 `ANC_HOT_ADDR` / `ANC_HOT_PREFIX`），起服务时开一次 | **不拦接入面**（递信封、要上下文照样能用）：stderr 报一遍，读出口把报缺如实写进 `gaps` |
+| CLI（`anc context pack` / `freeze`） | 同两个 flag；走一道**可替换的包级缝** `readHotTasks`（用例换掉它，不必起 redis） | 同 MCP：stderr 报一遍 + `gaps` 报缺 |
+| 看板（`/api/context`） | 起 `anc board serve` 时那个 `--hot-addr` 复用 | 回话里多两格：`tasks_wired` + `tasks_why` —— 这一页要自己答完，不逼前端去别的端点替它解释（同 roster 那条口径） |
+
+**看板多出来的第三格 `task_bands`**：任务状态 → 配色档（`green/yellow/red/unknown`）。
+放**视图层**不放契约里，两条理由：agent 那份契约一个字不该多（那是结构性保证）；而「这个词画什么颜色」
+本来就是视图层的事，且**词表只有一处说了算** —— `timeline.Band`（热层里的 status、时间线里的 status、
+这里摆的 status 是同一套词），前端不另抄一份。前端据此摆两段（「派给我的待办」/「我在做的」）+
+四档图例（不看颜色的人也有一条路）；`internal/board/ui/app.js` 是构建产物，入库。
+
+**e2e 当场抓到一个真缺陷（已修）**：热层没接上时，MCP 读出口**整条路断连**（`http: panic`）。
+根因是接线用了 **typed nil**：`var st *hot.Store` 直接塞进 `hotLister` 接口 —— 接口不是 nil，
+`g.Hot == nil` 判不出来，于是走进 `(*hot.Store)(nil).List()` 当场 nil deref。
+两处收口：
+
+| 收口 | 内容 |
+|---|---|
+| 接线 | 只在**开成功**时才往接口里塞（没接上就让它一直是 nil 接口） |
+| 介质层 | `(*Store).List` 对 nil 接收者回一句人话（「热层没开：Store 是 nil —— 调用方把「没接上」写成了「接上了」」），不 panic —— 交付出去的东西，坏法该是「报缺」不是「断连」。用例：`TestListOnNilStoreSaysSo` |
+
+**新增/改到的用例**：`TestContextPackAndMCPAreOneAssembly`（逐字段相同那条，现在把两摞也钉住）、
+`TestContextPackSaysWhenHotIsNotWired`、`TestContextPackScopedAskCarriesNoTasks`、
+`internal/board/context_test.go` 三条（没接上 / 接上了两摞与配色档 / 接上了但读不动）。
+
+**实测（本机 Windows 11，真起二进制 + 真 redis；非单元测试。vault 用的是 fixture 的临时副本 ——
+读出口会往 `audit/` 落痕，直接打在工作区里的 fixture 上会把用例数据弄脏，这一步踩过）**：
+
+| 判据 | 结果 |
+|---|---|
+| CLI 接上了 | ✅ `anc context pack <vault> --who alice` → `todo=case-2`（to=alice）· `doing=case-1`（by=alice）· bob 那件**一个字段都没漏进来** |
+| CLI 没接上 | ✅ `--hot-addr 127.0.0.1:6399` → stderr 报一遍；回话里 `todo`/`doing` **两个键都不出现**，`gaps[0]` 是那句「答不了」 |
+| MCP 接上了 | ✅ 真 HTTP + 真 JSON-RPC 调 `anc_read_context`：`todo=case-2 doing=case-1`，`gaps` 里没有「热层」那一条 |
+| MCP 没接上 | ✅ 起服务时 stderr 报一遍；回话 `keys=who,identity,domains,directory,skills,projects,gaps,at`（**没有** todo/doing），`gaps[0]` 是那句「答不了」；**不再断连** |
+| 看板 | ✅ `/api/context?who=alice` → `tasks_wired=true`、`task_bands={"case-1":"red","case-2":"yellow"}`；页面两段 + 图例都出来了（无头 Edge 截图核过） |
+| 看板单域 | ✅ `?who=alice&domain=trade` → 那一份里**没有** `todo` 键，`task_bands` 也不出 |
+| 用例 | ✅ CLI 侧 4 条 + 看板侧 3 条 + hot 侧 1 条 |
+| 质量门 | ✅ `gofmt -l .` 无输出 · `go vet ./...` 无输出 · `go test ./... -count=1` 19 包全绿 · `npm run check`（tsc + esbuild）过 |
+
+**这一刀之后仍悬着的**（不在本刀范围）：飞书只送指针那一半（发卡出去 / 收 action，网关口在议题 #65）、
+多 agent 互派的队列与版本号（议题 #60）、以及「派活这件事的裁判权在人」那条审批链路。
 ## 8. 与 SPEC 的映射
 
 | 本文 | SPEC |

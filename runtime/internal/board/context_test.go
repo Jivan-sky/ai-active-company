@@ -2,10 +2,14 @@ package board
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
+
+	"anc/internal/hot"
+	"anc/internal/timeline"
 )
 
 // ctxOf 打一次 /api/context，解出视图。状态码必须 200 —— 内容有问题**也回 200**：
@@ -110,5 +114,87 @@ func TestContextLeaksNoLocalPaths(t *testing.T) {
 	_, body := ctxOf(t, s.Handler(), "/api/context?who=alice")
 	if strings.Contains(body, s.Vault) {
 		t.Fatalf("回话里出现了本机路径：%s", body)
+	}
+}
+
+// 热层没接上：这一页必须说「这一段答不了」，**不许**摆一张空列表把「看不到」
+// 读成「没人派给你」（同 /api/hot 的 wired/why 口径，也就是 MCP / CLI 两边报的那条）。
+func TestContextSaysWhenHotIsNotWired(t *testing.T) {
+	v, body := ctxOf(t, newHandler(t, "domains"), "/api/context?who=alice")
+	if v.TasksWired {
+		t.Fatalf("没接热层却报 tasks_wired=true：%s", body)
+	}
+	if v.TasksWhy == "" {
+		t.Fatalf("tasks_wired=false 必须带上 why（那一段为什么答不了）：%s", body)
+	}
+	if v.Pack == nil || len(v.Pack.Todo) != 0 || len(v.Pack.Doing) != 0 {
+		t.Fatalf("没接上就不该给出待办：%+v", v.Pack)
+	}
+	if len(v.TaskBands) != 0 {
+		t.Fatalf("一条任务都没摆出来，不该有配色档：%+v", v.TaskBands)
+	}
+	var said bool
+	for _, g := range v.Pack.Gaps {
+		if strings.Contains(g, "热层没接上") {
+			said = true
+		}
+	}
+	if !said {
+		t.Fatalf("报缺里要说清「这一段答不了」：%v", v.Pack.Gaps)
+	}
+}
+
+// 热层接上了：两摞分得清（to = 你 / by = 你），别人的事一个字段都不漏进来；
+// 配色档跟着状态走 —— 词表仍然只有一处说了算（timeline.Band），看板不另抄一份。
+// 要单独一域时这两摞都不出现（同 CLI / MCP 那条纪律）。
+func TestContextTasksAndBands(t *testing.T) {
+	s := &Server{
+		Vault: fixturePath(t, "domains"),
+		Now:   func() time.Time { return fixedNow },
+		Hot: &fakeHot{ttl: time.Minute, list: []hot.State{
+			{ID: "case-2", Status: "running", Title: "把 Q3 结算的差异对一遍", To: "alice"},
+			{ID: "case-1", Status: "blocked", Title: "等船公司回 ETA", By: "alice"},
+			{ID: "case-9", Status: "running", Title: "bob 的事", By: "bob", To: "bob"},
+		}},
+	}
+	v, body := ctxOf(t, s.Handler(), "/api/context?who=alice")
+	if !v.TasksWired || v.TasksWhy != "" {
+		t.Fatalf("接上了就该 wired=true 且不带 why：wired=%v why=%q", v.TasksWired, v.TasksWhy)
+	}
+	if v.Pack == nil || len(v.Pack.Todo) != 1 || v.Pack.Todo[0].ID != "case-2" {
+		t.Fatalf("派给我的待办不对：%s", body)
+	}
+	if len(v.Pack.Doing) != 1 || v.Pack.Doing[0].ID != "case-1" {
+		t.Fatalf("我在做的不对：%s", body)
+	}
+	if v.TaskBands["case-2"] != timeline.BandYellow || v.TaskBands["case-1"] != timeline.BandRed {
+		t.Fatalf("配色档没跟状态走：%+v", v.TaskBands)
+	}
+	if _, ok := v.TaskBands["case-9"]; ok {
+		t.Fatalf("别人的任务不该出现在这一页（连编号都不该有）：%+v", v.TaskBands)
+	}
+
+	scoped, body2 := ctxOf(t, s.Handler(), "/api/context?who=alice&domain=trade")
+	if len(scoped.Pack.Todo) != 0 || len(scoped.Pack.Doing) != 0 || len(scoped.TaskBands) != 0 {
+		t.Fatalf("单域问不该捎待办：%s", body2)
+	}
+}
+
+// 热层接上了但这一会儿读不动：也是「答不了」，不是「没人派给你」—— why 里要把原因说清。
+func TestContextSaysWhenHotReadFails(t *testing.T) {
+	s := &Server{
+		Vault: fixturePath(t, "domains"),
+		Now:   func() time.Time { return fixedNow },
+		Hot:   &fakeHot{ttl: time.Minute, err: errors.New("dial tcp 10.0.0.5:6379: connect refused")},
+	}
+	v, body := ctxOf(t, s.Handler(), "/api/context?who=alice")
+	if v.TasksWired {
+		t.Fatalf("读不动却报 tasks_wired=true：%s", body)
+	}
+	if !strings.Contains(v.TasksWhy, "读不了") {
+		t.Fatalf("why 里要说清是读不动：%q", v.TasksWhy)
+	}
+	if len(v.Pack.Todo) != 0 || len(v.Pack.Doing) != 0 {
+		t.Fatalf("读不动就不该给出待办：%+v", v.Pack)
 	}
 }

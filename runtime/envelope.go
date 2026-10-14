@@ -17,6 +17,7 @@ import (
 
 	"anc/internal/audit"
 	"anc/internal/envelope"
+	"anc/internal/hot"
 	"anc/internal/mcp"
 	"anc/internal/org"
 )
@@ -185,6 +186,7 @@ const envelopeServeUsage = `anc envelope serve —— 起 ANC 的接入面（MCP
 
 用法：
   anc envelope serve <vault 目录> [--addr 127.0.0.1:8791] [--data <data 目录>]
+                                     [--hot-addr 127.0.0.1:6379] [--hot-prefix anc]
 
 harness（Claude Code / Codex / …）通过 MCP 调工具。桥的两半都在这一个入口上：
 
@@ -202,6 +204,10 @@ harness（Claude Code / Codex / …）通过 MCP 调工具。桥的两半都在�
   可见范围 = render.VisibleDomains（与 persona 段 8 同一把尺子）：自己的域全行，
   别人的域只给「找谁」；要别人的域**拒**，但指路。身份不许自报：解不出 = 这个人不存在。
   每次调用留一条痕进 audit（谁 / 要什么 / 给没给 / 为什么拒）。
+  还捎上「派给我的待办」（热层里 to / by 指向你的那些）—— **反向下发**就靠这一块：
+  agent 在自己的会话里 pull，ANC 不去插话、不去打断（插话就是打断：上一条还没跑完，
+  第二条已经在改前提了）。任务本体住热层（当前值），达标的落 timeline（历史）。
+  **热层接不上不编**：报缺说「这一段答不了」，不拿空清单冒充「没人派给你」。
 
 门禁口径（与 envelope check 完全一致，因为走的是同一份规则表、同一支判法）：
   绑定那一组发现默认 warn = **照收**（落盘 + 回话）；被 company.md 的 policy 段提成 fatal 的，
@@ -218,11 +224,19 @@ harness（Claude Code / Codex / …）通过 MCP 调工具。桥的两半都在�
 退出：Ctrl-C。
 `
 
-// envelopeIngress 是接入面本身：一个 vault + 一个 data 目录 + 一个时钟。
+// hotLister 只取装配要的那一件事（读一摞当前值）—— 出口不关心 TTL / 认领那一套。
+type hotLister interface {
+	List() ([]hot.State, error)
+}
+
+// envelopeIngress 是接入面本身：一个 vault + 一个 data 目录 + 一个热层 + 一个时钟。
 type envelopeIngress struct {
 	Vault   string
 	DataDir string
 	Now     func() time.Time
+	// Hot 是热层（「派给我的待办」从这儿来）。nil = 这一块没接上：读出口如实报缺，
+	// 不拿空清单冒充「没人派给你」（同 `anc board serve --hot-addr` 的口径）。
+	Hot hotLister
 }
 
 func (g *envelopeIngress) now() time.Time {
@@ -471,6 +485,8 @@ func cmdEnvelopeServe(args []string) int {
 	fs := flag.NewFlagSet("envelope serve", flag.ContinueOnError)
 	addr := fs.String("addr", "127.0.0.1:8791", "监听地址")
 	data := fs.String("data", "", "运行态 data 目录（信封日志落这儿）")
+	hotAddr := fs.String("hot-addr", "", "热层地址（读出口的「派给我的待办」用它；默认 "+hot.DefaultAddr+"；也可用 ANC_HOT_ADDR）")
+	hotPrefix := fs.String("hot-prefix", "", "热层 key 前缀（默认 "+hot.DefaultPrefix+"；也可用 ANC_HOT_PREFIX）")
 	flagArgs, posArgs := splitArgs(args, map[string]bool{})
 	if err := fs.Parse(flagArgs); err != nil {
 		return 2
@@ -524,12 +540,30 @@ func cmdEnvelopeServe(args []string) int {
 		fmt.Fprintf(os.Stderr, "⚠️  真相源现在有红档发现（绑定会带上它们）：\n%v\n", err)
 	}
 
-	g := &envelopeIngress{Vault: vault, DataDir: dataDir, Now: time.Now}
+	// 热层：「派给我的待办」从这儿来。接不上**不拦接入面** —— 递信封、要上下文照样能用，
+	// 读出口会把「这一段答不了」如实写进 gaps（同 board serve 那条口径）。
+	// 只在接上了才往接口里塞：`var st *hot.Store` 直接塞进去会变成一个
+	// 「非 nil 的接口、里面是个 nil 指针」—— `g.Hot == nil` 于是判不出来，
+	// 读出口会走进 (*hot.Store)(nil).List() 当场 panic。没接上就让它一直是 nil。
+	var hotStore hotLister
+	hotAddrShown := firstNonEmpty(*hotAddr, os.Getenv("ANC_HOT_ADDR"), hot.DefaultAddr)
+	if st, err := hot.Open(hot.Config{
+		Addr:   hotAddrShown,
+		Prefix: firstNonEmpty(*hotPrefix, os.Getenv("ANC_HOT_PREFIX")),
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "注意：热层没接上（%v）—— 读出口里「派给我的待办」那一段会如实报缺。\n", err)
+	} else {
+		defer st.Close()
+		hotStore = st
+	}
+
+	g := &envelopeIngress{Vault: vault, DataDir: dataDir, Now: time.Now, Hot: hotStore}
 	fmt.Printf("ANC 接入面已起（MCP · streamable HTTP · 无状态）：\n")
 	fmt.Printf("  地址   http://%s/mcp\n", urlHost)
 	fmt.Printf("  vault  %s\n", vault)
 	fmt.Printf("  日志   %s\n", filepath.Join(dataDir, envelope.DirName))
 	fmt.Printf("  工具   anc_send_envelope（递进来）· anc_read_context（要出去）\n")
+	fmt.Printf("  热层   %s（「派给我的待办」走它；没接上就如实报缺，不编）\n", hotAddrShown)
 	fmt.Printf("  接入   claude mcp add --transport http anc http://%s/mcp\n", urlHost)
 	fmt.Printf("  退出   Ctrl-C\n\n")
 
