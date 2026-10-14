@@ -6,6 +6,7 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -19,11 +20,19 @@ type Config struct {
 
 // Store 是热层的一个介质实现。它**不是**真相源（见包注释 1）。
 type Store struct {
-	conn   *respConn
-	prefix string
-	ttl    time.Duration
-	now    func() time.Time
+	mu   sync.Mutex // 只护 conn 这一个字段 —— 换连接时，别的调用不该拿到半截的它
+	conn *respConn
+	// dial 是「再拨一条」的办法；nil = 这条 Store 不自己拨号（测试注入连接时就是这种）。
+	dial    func() (io.ReadWriteCloser, error)
+	timeout time.Duration
+	prefix  string
+	ttl     time.Duration
+	now     func() time.Time
 }
+
+// errNoDial 是「这条 Store 不会自己拨号」：newStore 直接接了条连接时（测试注入）就是这种。
+// 这种情况下坏掉的流换不掉 —— 与其硬往上写，不如如实报错。
+var errNoDial = errors.New("hot: 这条 Store 不自己拨号，换不了连接")
 
 // Open 连上一个热层，并**当场 PING 一次**：热层没起来要立刻报出来，
 // 不许静默降级成「假装没有这回事」。
@@ -37,8 +46,11 @@ func Open(cfg Config) (*Store, error) {
 		return nil, err
 	}
 	st := newStore(conn, cfg)
+	// 常驻进程（看板）一活就是好几天，而热层随时可能被重启 —— 连接坏了得能自己换一条。
+	// 少了这一步，一次 redis 重启就等于「从此永久失明，只能重启进程」（议题 #66）。
+	st.dial = func() (io.ReadWriteCloser, error) { return dialResp(addr, cfg.Timeout) }
 	if err := st.Ping(); err != nil {
-		_ = conn.Close()
+		_ = st.Close() // 关「现在手里这条」：Ping 失败时它可能已经换过了
 		return nil, err
 	}
 	return st, nil
@@ -50,21 +62,84 @@ func newStore(rw io.ReadWriteCloser, cfg Config) *Store {
 		prefix = DefaultPrefix
 	}
 	return &Store{
-		conn:   newRespConn(rw, cfg.Timeout),
-		prefix: prefix,
-		ttl:    cfg.TTL,
-		now:    time.Now,
+		conn:    newRespConn(rw, cfg.Timeout),
+		timeout: cfg.Timeout,
+		prefix:  prefix,
+		ttl:     cfg.TTL,
+		now:     time.Now,
 	}
 }
 
 // Prefix / TTL 回显实际生效的配置值 —— 别让人猜它连的是哪儿、TTL 是不是生效了。
 func (st *Store) Prefix() string     { return st.prefix }
 func (st *Store) TTL() time.Duration { return st.ttl }
-func (st *Store) Close() error       { return st.conn.Close() }
+
+// Close 关掉现在手里的那条连接。
+func (st *Store) Close() error {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.conn == nil {
+		return nil
+	}
+	return st.conn.Close()
+}
+
+// do 是本包所有命令的**唯一出口**。连接坏了就换一条新的，但**这条命令不重发**。
+//
+// 为什么不顺手重发：「重发安不安全」按命令而异 —— 读（HGETALL / GET / SCAN）重发无害，
+// 但 `SET NX` 在「服务端执行了、回包没回来」这个窗口里，重发会看到 key 已存在，
+// 「被别人抢了」和「自己上次其实成功了」长得一模一样。那个判据要人来拍（议题 #66），
+// 这里只治「断了不会接」：下一次调用会拿到一条好连接。
+//
+// 另一条规矩：**标了死的流就不再写**。上一次读失败时，那条命令的回复可能还半截在路上，
+// 这时候再往上写，两条命令的答复会串在一起 —— 读回一份错的值，比报个错坏得多。
+func (st *Store) do(args ...string) (any, error) {
+	c := st.currentConn()
+	if c.isDead() {
+		nc, err := st.replaceConn(c)
+		if err != nil {
+			return nil, fmt.Errorf("hot: 手里这条连接已经失效，且换不上新的：%w", err)
+		}
+		c = nc
+	}
+	rep, err := c.do(args...)
+	if err == nil || !c.isDead() {
+		return rep, err
+	}
+	// 这一条照实报错、不重发；顺手记下「该换了」—— 换得成，下一次调用走上面的分支直接就通。
+	_, _ = st.replaceConn(c)
+	return nil, err
+}
+
+func (st *Store) currentConn() *respConn {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.conn
+}
+
+// replaceConn 把坏掉的那条换掉，回「换完之后手里这条」。
+// 拨号失败就留着旧的、把错回给调用方 —— 热层回来之后，谁都不用重启进程。
+func (st *Store) replaceConn(bad *respConn) (*respConn, error) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.conn != bad {
+		return st.conn, nil // 别人已经换过了 —— 用换好的那条
+	}
+	if st.dial == nil {
+		return st.conn, errNoDial
+	}
+	rw, err := st.dial()
+	if err != nil {
+		return st.conn, err // 热层还没回来：留着旧的，下一次调用再试
+	}
+	st.conn = newRespConn(rw, st.timeout)
+	_ = bad.Close()
+	return st.conn, nil
+}
 
 // Ping 报「热层在不在」。
 func (st *Store) Ping() error {
-	rep, err := st.conn.do("PING")
+	rep, err := st.do("PING")
 	if err != nil {
 		return err
 	}
@@ -96,7 +171,7 @@ func (st *Store) Put(s State) (State, error) {
 	for k, v := range s.Fields() {
 		args = append(args, k, v)
 	}
-	if _, err := st.conn.do(args...); err != nil {
+	if _, err := st.do(args...); err != nil {
 		return State{}, err
 	}
 	if err := st.applyTTL(key); err != nil {
@@ -164,7 +239,7 @@ func (st *Store) Claim(id, who string, lease time.Duration) (State, error) {
 	if lease > 0 {
 		args = append(args, "PX", strconv.FormatInt(lease.Milliseconds(), 10))
 	}
-	rep, err := st.conn.do(args...)
+	rep, err := st.do(args...)
 	if err != nil {
 		return State{}, err
 	}
@@ -206,17 +281,17 @@ func (st *Store) Release(id, who string) error {
 	if w := strings.TrimSpace(who); w != "" && w != owner {
 		return fmt.Errorf("hot: %s 的认领人是 %s，不是 %s —— 不能替别人放开", id, owner, w)
 	}
-	_, err = st.conn.do("DEL", LeaseKey(st.prefix, id))
+	_, err = st.do("DEL", LeaseKey(st.prefix, id))
 	return err
 }
 
 // Drop 把一条进行中的状态从热层清走（状态 + 租约）。
 // **只该在「已经落库」之后用**：清之前，真相源里没有的东西就真没了。
 func (st *Store) Drop(id string) error {
-	if _, err := st.conn.do("DEL", TaskKey(st.prefix, id)); err != nil {
+	if _, err := st.do("DEL", TaskKey(st.prefix, id)); err != nil {
 		return err
 	}
-	_, err := st.conn.do("DEL", LeaseKey(st.prefix, id))
+	_, err := st.do("DEL", LeaseKey(st.prefix, id))
 	return err
 }
 
@@ -228,15 +303,15 @@ func (st *Store) applyTTL(key string) error {
 		if ms < 1 {
 			ms = 1
 		}
-		_, err := st.conn.do("PEXPIRE", key, strconv.FormatInt(ms, 10))
+		_, err := st.do("PEXPIRE", key, strconv.FormatInt(ms, 10))
 		return err
 	}
-	_, err := st.conn.do("PERSIST", key)
+	_, err := st.do("PERSIST", key)
 	return err
 }
 
 func (st *Store) hash(key string) (map[string]string, error) {
-	rep, err := st.conn.do("HGETALL", key)
+	rep, err := st.do("HGETALL", key)
 	if err != nil {
 		return nil, err
 	}
@@ -262,7 +337,7 @@ func (st *Store) hash(key string) (map[string]string, error) {
 // leaseOf 回 (认领人, 剩余毫秒)。剩余 -1 = 没有过期时间（不到期），-2 = 没人认领。
 func (st *Store) leaseOf(id string) (string, int64, error) {
 	key := LeaseKey(st.prefix, id)
-	rep, err := st.conn.do("GET", key)
+	rep, err := st.do("GET", key)
 	if err != nil {
 		return "", 0, err
 	}
@@ -270,7 +345,7 @@ func (st *Store) leaseOf(id string) (string, int64, error) {
 	if strings.TrimSpace(owner) == "" {
 		return "", -2, nil
 	}
-	repTTL, err := st.conn.do("PTTL", key)
+	repTTL, err := st.do("PTTL", key)
 	if err != nil {
 		return "", 0, err
 	}
@@ -299,7 +374,7 @@ func (st *Store) scan(pattern string) ([]string, error) {
 	var keys []string
 	cursor := "0"
 	for {
-		rep, err := st.conn.do("SCAN", cursor, "MATCH", pattern, "COUNT", "200")
+		rep, err := st.do("SCAN", cursor, "MATCH", pattern, "COUNT", "200")
 		if err != nil {
 			return nil, err
 		}

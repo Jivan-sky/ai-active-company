@@ -32,7 +32,16 @@ type respConn struct {
 	r       *bufio.Reader
 	w       *bufio.Writer
 	timeout time.Duration
+	// dead = 这条流已经不可信（写不出去，或读到了传输层的错，**不是**热层回的 `-ERR`）。
+	// 连接层只负责把它标出来，换不换连接由 Store 决定（见 redis.go 的 do）。
+	dead bool
 }
+
+// replyError 是热层**自己回**的错（`-ERR ...`）：命令被拒，连接还是好的。
+// 与传输层错误分开，是为了别把「一条命令被拒」当成「连接坏了」去换连接。
+type replyError struct{ msg string }
+
+func (e *replyError) Error() string { return "hot: 热层回了一个错：" + e.msg }
 
 // deadlineSetter 让测试里的假连接也能被复用：net.Conn 有 SetDeadline，别的没有就算了。
 type deadlineSetter interface{ SetDeadline(time.Time) error }
@@ -63,9 +72,26 @@ func (rc *respConn) do(args ...string) (any, error) {
 		_ = d.SetDeadline(time.Now().Add(rc.timeout))
 	}
 	if err := rc.writeCmd(args); err != nil {
+		rc.dead = true
 		return nil, err
 	}
-	return rc.readReply()
+	rep, err := rc.readReply()
+	if err != nil {
+		// 热层自己回的 `-ERR` 是正常答复 —— 别把它当断线。
+		var re *replyError
+		if !errors.As(err, &re) {
+			rc.dead = true
+		}
+		return nil, err
+	}
+	return rep, nil
+}
+
+// isDead 报「这条连接还值不值得留着」。
+func (rc *respConn) isDead() bool {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	return rc.dead
 }
 
 func (rc *respConn) writeCmd(args []string) error {
@@ -96,7 +122,7 @@ func (rc *respConn) readReply() (any, error) {
 	case '+':
 		return rest, nil
 	case '-':
-		return nil, fmt.Errorf("hot: 热层回了一个错：%s", rest)
+		return nil, &replyError{msg: rest}
 	case ':':
 		n, perr := strconv.ParseInt(rest, 10, 64)
 		if perr != nil {
