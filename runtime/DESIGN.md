@@ -3095,6 +3095,66 @@ A2A 的任务状态机把 `input-required` / `auth-required` 当**一等中断�
 2. `README.md` 页表里「数据流」那一行的现状写着「**只有策略面**」，而这一页早就接了 `exec`
    （执行面事实，§ 头部 2026-10-08 那条自己就写着「数据流 = 策略面 + 执行面事实」）——
    一行之内自相矛盾，且与它下面那句「只说执行面与策略面」也打架。改成「**策略面 + 执行面**」。
+### 7.1.54 「换一台机器重装」计时：从零跑一杆，顺手作废一个假数（2026-10-15，W1 门）
+
+W1 门写着「重装 < 10 分钟」。台账里那个 **0.93 秒** 一直当它过了 —— 直到把证据翻出来读：
+
+`2026-10-08-linux-vm2-clean-reinstall-timing.log` 只做了三件事 —— `cc-connect daemon uninstall`
+（擦单元）、删 drop-in 与 `gateway/homes/data`、**然后计时 `anc apply` 那一步**。vault、`anc` 二进制、
+`cc-connect` 二进制、`secrets.env` **全在位**。所以它答的是「**擦掉装载痕迹再装一次**要多久」，
+不是「**换一台机器重装**」。**口径不对，作废。**
+
+**新口径**（先说清起点，再说数）：
+
+- **T0** = 一台干净机器 + 三个输入物已在本机 + 人已能 SSH 进来
+  1. 发布包 `anc_0.1.0_linux_amd64.zip`（4,033,099 字节，内含 `anc` + `templates/` + `inventory/` + `README.md`）
+  2. `cc-connect-v1.3.4-linux-amd64`（23,453,858 字节，SHA256 `86a8c00d…4c997`，与上游 `checksums.txt` 逐字一致）
+  3. 客户真相源 `vault`（15 个文件）+ `secrets.env`（601 字节 / 12 个键）
+- **T_end** = `anc apply --apply` 七步 rc=0
+
+**实测**（Ubuntu 24.04.5 LTS / 内核 6.8.0-142 / 2 vCPU / 3.8 GiB；全新用户 `anc2` 由 `useradd` 现建）：
+
+| 段 | 耗时 |
+|---|---|
+| 机器准备（`useradd` + `loginctl enable-linger` + `authorized_keys`） | 58 ms |
+| 装载（解包 → 放二进制/模板 → 拷 vault/凭据 → `anc apply` 七步） | 985 ms |
+| **合计** | **1043 ms ≈ 1.05 秒** |
+| 幂等复跑 `anc apply` | 836 ms |
+
+七步 rc=0；单元 `enabled` + `active`；settle 5 秒后 `anc probe` —— socket 🟢 在跑 /
+`sandbox-alice` 🟡（没观测到任何会话，**这是正确行为不是缺陷**）/ `sandbox-bob`·`sandbox-devbot` ⚪（真相源声明 `unwired`）。
+门是 600,000 ms，余量约 **575 倍**。证据 `<沙箱>/logs/2026-10-15-linux-reinstall-from-zero.log`。
+
+**这一杆答不了什么**（照实列，别当漏做）：
+
+1. 真相源是**拷的现成 vault**，不是 `anc org init` + onboarding 访谈 —— 那一段是**人的时间**，不在这条口径里。
+2. 凭据是**拷的现成 `secrets.env`**。真客户要去 IM 后台建 N 个应用、把 `app_id` / `app_secret` 落进去 ——
+   **非技术步骤，这一杆一点没测**。
+3. macOS 零覆盖（议题 #23），T0 里根本没有那台机器。
+4. 27.4 MB 的下载与系统安装不在内（T0 前提就是文件已在机器上）。**想测也测不了**：这台 VM 到
+   `release-assets.githubusercontent.com:443` 的 TLS 直接不通（`SSL_ERROR_SYSCALL`，`curl` 重试两次同一个错）。
+   客户机器怎么拿到那 27 MB，是另一件事，这里只留一条记录。
+
+**顺手抓到的两条**（都是这一杆自己撞出来的，不是另外打扫）：
+
+1. **干净 Ubuntu 24.04 上没有 `unzip`**（`dpkg-query` 查不到、`command -v` 空）—— 我们发的偏偏是 `.zip`。
+   这一杆靠基础系统自带的 `busybox unzip` 过了；`python3 -m zipfile -e` 同机实测也解得出。
+   装得上，但这条路是**踩在「碰巧有 busybox」上**的。要不要改发 `.tar.gz`（`tar` 恒有）另议，先记录。
+2. **`Compress-Archive` 打的 zip 不带 Unix 权限位** —— `anc` 解出来是 `-rw-rw-r--`，不是可执行。
+   所以 `install -m 0755` / `chmod +x` 是**必经一步**，不是保险起见；两条解包路径都一样。
+
+**还有一条没坐实的**：`anc apply` 第 7 步报 `🟢 platform ready` 时，API socket 未必已经 listen ——
+第一次跑（用户 `ancfresh`）立即打 `anc probe` 拿到 `🔴 socket 不存在`，40 ms 后日志才出 `api server started`；
+第二次跑（`anc2`）同样立即打就是 🟢。**同一个动作两次结果不同 = 有一段竞态窗口**，不是稳定缺陷，
+但足以让现场的人以为装坏了。本轮只记录，不动代码。
+
+**一条环境噪音，别误读**：日志里那两条 `feishu: websocket error … app_id is invalid` 归 `sandbox-bob` /
+`sandbox-devbot`（config 里是 `cli_sandbox_bob` / `cli_sandbox_devbot` 这种**占位 app_id**），
+`sandbox-alice` 拿了真 `app_id` 并 `bot identified` 成功。**不是装载的问题。**
+
+**探针如实**：`anc probe` 在这条全新装载上退出码是 **1**（一个绿的都没有 —— alice 黄、两个灰）。
+这是「空集上的『都绿了』是空真」那条判据在起作用（§7.1.20），**不是装载失败**。
+
 ## 8. 与 SPEC 的映射
 
 | 本文 | SPEC |

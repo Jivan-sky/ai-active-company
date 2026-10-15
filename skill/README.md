@@ -35,12 +35,26 @@
 
 它只说方法与边界（只提案、不落盘、形状照 `--dump-shape`、抽不到就空着）；校验 / 原子写 / 留痕全在 `anc ingest` 那一条管道里，不在这里重复实现。
 
+### 交付那一面
+
+再往下这件也不是蒸出来的产物，是**交付流程**的能力件 —— 它管「怎么把一家公司从零带到能跑」，
+与资产沉淀那条链、上面那条接入面都并列。
+
+| 地址 | 能力 | 边界 |
+|---|---|---|
+| `skill/anc-onboard/SKILL.md` | **冷启动五阶段**：访谈 → 名单 → 资料 → 装机 → 验证；向导与体检成对、做不了的显式列成 checklist、状态断点续走 | 口径来自 `SPEC.md` §9.2；能固化的部分全在 `anc` 现有的命令里（`org init` / `org check` / `render --check` / `apply` / `probe` / `audit` / `doctor` / `ingest`），这里只写流程与检查点 |
+
+它**不复写** `anc apply` 的七步、也不另造一份 vault 结构 —— 那两样各自只有一份实现。
+阶段 4 那三条 checklist（建 IM 应用 / harness 登录 / 自动登录决策）是**机器做不了**的，
+所以本件把它们写成引导式清单，而不是假装能自动。
+**轻形态**复用阶段 1–3；轻形态的代码与成员侧能力件本仓库还没有。
+
 ## 装配
 
 扁平命名空间，一个一个独立入口，复制到 skills 根目录即可：
 
 ```powershell
-Copy-Item -Recurse -Force .\skill\anc-distill,.\skill\anc-distill-targets,.\skill\anc-evolve,.\skill\kb-retrieval-acceptance,.\skill\anc-ingest-propose "$env:USERPROFILE\.agents\skills\"
+Copy-Item -Recurse -Force .\skill\anc-distill,.\skill\anc-distill-targets,.\skill\anc-evolve,.\skill\kb-retrieval-acceptance,.\skill\anc-ingest-propose,.\skill\anc-onboard "$env:USERPROFILE\.agents\skills\"
 ```
 
 macOS / Linux 用对应的 `cp -r`。装到哪个根目录由宿主决定，本仓库不假设。
@@ -85,4 +99,5 @@ macOS / Linux 用对应的 `cp -r`。装到哪个根目录由宿主决定，本�
 
 - `anc-distill` / `anc-distill-targets` / `anc-evolve` 这三件**没有跑过压力测试**，也还没写 `test-prompts.json` —— 它们自己尚未被 `anc-evolve` 评过。
 - `skill/kb-retrieval-acceptance/` 已编译并通过 `anc-distill` 阶段 0–6。**阶段 7 压力测试**：触发测试与执行测试**已真跑**，但执行测试的结论口径被独立复核修正四处 → 记为「**走完、待回炉**」，按规矩不得标「通过」；基线对照部分有效（3 条干净 / 2 条被污染）。记录在 `skill/runs/kb-retrieval-acceptance/06-pressure.md`，原始凭证在 `skill/runs/kb-retrieval-acceptance/08-exec-test/`。
+- `skill/anc-onboard/` **没有被真实客户端到端跑过** —— 它引用的每条命令都各自实测过，但阶段 1–3 的访谈脚本与阶段 4 的 IM 后台 checklist **还没有真人走完一遍**，不得当「已通过」讲。
 - 机制溯源是重写而非引用；其中 `relic.skill` 的许可证未核实，若要引用其模板原文需先确认。
