@@ -25,12 +25,22 @@
 
 自带评测用例：`skill/kb-retrieval-acceptance/test-prompts.json`（8 条：正向 / 负向 / 近邻 / 输出断言）；评测台账：`skill/kb-retrieval-acceptance/results.tsv`（`anc-evolve` 首次分 **84.0 / 100**；闸门「单一事实源」已在第 1 轮修掉 —— 规则改为单文件单向维护；第 1 轮 keep，参考分 86.4）。
 
+### 入口那一面
+
+下面这件不是蒸出来的产物，是**接入面**的能力件 —— 它管「模型怎么把材料交进真相源」，与资产沉淀那条链并列。
+
+| 地址 | 能力 | 边界 |
+|---|---|---|
+| `skill/anc-ingest-propose/SKILL.md` | **外部材料进真相源的提案**：把一段材料读成一份 `anc ingest` 提案（只提案、不落盘），自检走 `--dry-run --patch`，人看过 diff 再由管道落 | 口径来自议题 #47 与 `anc ingest` 那条管道；形状不抄文档，读 `anc ingest --dump-shape` |
+
+它只说方法与边界（只提案、不落盘、形状照 `--dump-shape`、抽不到就空着）；校验 / 原子写 / 留痕全在 `anc ingest` 那一条管道里，不在这里重复实现。
+
 ## 装配
 
-扁平命名空间，三个独立入口，复制到 skills 根目录即可：
+扁平命名空间，一个一个独立入口，复制到 skills 根目录即可：
 
 ```powershell
-Copy-Item -Recurse -Force .\skill\anc-distill,.\skill\anc-distill-targets,.\skill\anc-evolve,.\skill\kb-retrieval-acceptance "$env:USERPROFILE\.agents\skills\"
+Copy-Item -Recurse -Force .\skill\anc-distill,.\skill\anc-distill-targets,.\skill\anc-evolve,.\skill\kb-retrieval-acceptance,.\skill\anc-ingest-propose "$env:USERPROFILE\.agents\skills\"
 ```
 
 macOS / Linux 用对应的 `cp -r`。装到哪个根目录由宿主决定，本仓库不假设。

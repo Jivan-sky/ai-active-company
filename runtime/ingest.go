@@ -58,9 +58,14 @@ git 那边照样只看得到一行 diff。
   4. 通过 → 原子写回真 vault，并记一条审计（谁、何时、写了什么）
   ⚠️ **不 git commit** —— 历史归人，机器不写历史：落完自己 「git diff」 看一眼再提交。
 
+review 那一步：提案里装的是整份文件全文（下面解释了为什么），光看 JSON 看不出改了哪几行 ——
+所以有 「--patch」：落盘前就把「会改成什么样」打成 unified diff，与 git 那份同形状。
+
 选项：
   --from <文件|->   提案；- = 从 stdin 读
   --dry-run         只走到第 3 步：打印会动哪几个文件，一行不落
+  --patch           落盘前把改动打成 unified diff —— 人 review 看的就是这一份
+  --dump-shape      打印出厂提案形状（数据）；不需要 vault
   --json            机器读的出口
 
 退出码：0 落盘（dry-run 通过）· 1 校验不过 / 提案读不懂 / 环境错 · 2 用法错
@@ -68,6 +73,31 @@ git 那边照样只看得到一行 diff。
 
 // ingestWhitelist 是落点的**全部**范围，出错时就着它说话 —— 人就该在出错的地方看见白名单。
 const ingestWhitelist = "domains.md · projects.md · agents.md · members/<成员名>/<文件>"
+
+// ingestShapeJSON 是出厂提案形状 —— **数据**，不是分支。
+//
+// 为什么要有它：给 harness 的那一面（skill/anc-ingest-propose）要靠一份形状说话。
+// 让它照文档抄一份，两份迟早不一样；形状只有一处说了算，白名单也从 ingestWhitelist 来。
+// （同 `anc approvals card --dump-frame` 那条纪律：帧与形状都住代码里，拿走改就是了。）
+func ingestShapeJSON() string {
+	return `{
+  "shape": "anc.ingest.proposal/v1",
+  "fields": {
+    "by":     {"required": true,  "what": "谁提的 —— 认不出人就是拒收"},
+    "why":    {"required": false, "what": "附注：这份材料从哪来"},
+    "writes": {"required": true, "min": 1, "each": {"path": "vault 里的相对路径", "content": "整份文件全文（不是补丁）"}}
+  },
+  "whitelist": "` + ingestWhitelist + `",
+  "rules": [
+    "多出来的字段一律报错 —— 拼错的字段不许静默成「没写」",
+    "content 是整份文件，不是补丁：补丁要匹配上下文，人写错一行整条都落不下去",
+    "同一份提案里同一个 path 只能出现一次",
+    "path 只能是 vault 里的相对路径，用 / 分隔"
+  ],
+  "boundary": "harness 只提案，不落盘：这份东西由人看过之后、再由 anc ingest 落（机器不写 git 历史）",
+  "selfcheck": "anc ingest <vault> --from <提案.json|-> --dry-run --patch"
+}`
+}
 
 // maxProposal 是提案上限：提案里装的是整份文件，正常到不了这个数。
 const maxProposal = 16 << 20
@@ -99,6 +129,7 @@ type ingestOut struct {
 	By      string           `json:"by"`
 	Why     string           `json:"why,omitempty"`
 	Files   []ingestFileView `json:"files"`
+	Patch   []string         `json:"patch,omitempty"`
 	Audit   string           `json:"audit,omitempty"`
 	Warns   []string         `json:"warns,omitempty"`
 	Refused []string         `json:"refused,omitempty"`
@@ -109,10 +140,17 @@ func cmdIngest(args []string) int {
 	fs := flag.NewFlagSet("ingest", flag.ContinueOnError)
 	from := fs.String("from", "", "提案文件（- = 从 stdin 读）")
 	dry := fs.Bool("dry-run", false, "只校验不落盘")
+	patch := fs.Bool("patch", false, "把改动打成 unified diff（人 review 看的就是这个）")
+	shape := fs.Bool("dump-shape", false, "打印出厂提案形状（数据）")
 	asJSON := fs.Bool("json", false, "机器读的出口")
-	flagArgs, posArgs := splitArgs(args, map[string]bool{"dry-run": true, "json": true})
+	flagArgs, posArgs := splitArgs(args, map[string]bool{"dry-run": true, "patch": true, "dump-shape": true, "json": true})
 	if err := fs.Parse(flagArgs); err != nil {
 		return 2
+	}
+	// 形状可以单独问：harness 那一步手上还没有 vault 可谈（能力件先读形状，再出提案）。
+	if *shape {
+		fmt.Println(ingestShapeJSON())
+		return 0
 	}
 	if len(posArgs) != 1 || strings.TrimSpace(*from) == "" {
 		fmt.Fprint(os.Stderr, ingestUsage)
@@ -153,14 +191,18 @@ func cmdIngest(args []string) int {
 		fmt.Fprintf(os.Stderr, "错误: vault 复制到临时副本失败（校验要在一棵完整的树上做）: %v\n", err)
 		return 1
 	}
+	var priors []ingestPrior
 	for _, w := range p.Writes {
 		dst := filepath.Join(tree, filepath.FromSlash(w.Path))
-		change, err := ingestChange(dst, w.Content)
+		old, change, err := ingestChange(dst, w.Content)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "错误: %s 读不动: %v\n", w.Path, err)
 			return 1
 		}
 		out.Files = append(out.Files, ingestFileView{Path: w.Path, Change: change, Bytes: len(w.Content)})
+		if *patch {
+			priors = append(priors, ingestPrior{Path: w.Path, Old: old, New: w.Content, IsNew: change == "new"})
+		}
 		if err := writeFileAtomic(dst, []byte(w.Content), 0o644, 0o755); err != nil {
 			fmt.Fprintf(os.Stderr, "错误: 改写进不了临时副本（%s）: %v\n", w.Path, err)
 			return 1
@@ -179,6 +221,14 @@ func cmdIngest(args []string) int {
 		return 1
 	}
 	out.Warns = org.IssueStrings(o.Warnings)
+
+	// 落盘前那条 diff：**校验通过之后**才算 —— 被红档拦住的提案一条都落不下去，
+	// 给它配一份 diff 只会让人以为「就差点头了」。
+	if *patch {
+		for _, pr := range priors {
+			out.Patch = append(out.Patch, unifiedDiff(pr.Path, pr.Old, pr.New, pr.IsNew)...)
+		}
+	}
 
 	if *dry || !ingestAnyChanged(out.Files) {
 		return emitIngest(out, *asJSON)
@@ -372,17 +422,26 @@ func copyTree(src, dst string) error {
 }
 
 // ingestChange 比对提案与库里现在那一份：new（本来没有）/ changed / same。
-func ingestChange(path, content string) (string, error) {
+// 顺手把**改前那一份**交出来（落盘前那条 diff 要用）；文件不存在时它为空串 + new。
+func ingestChange(path, content string) (string, string, error) {
 	old, err := os.ReadFile(path)
 	switch {
 	case os.IsNotExist(err):
-		return "new", nil
+		return "", "new", nil
 	case err != nil:
-		return "", err
+		return "", "", err
 	case string(old) == content:
-		return "same", nil
+		return string(old), "same", nil
 	}
-	return "changed", nil
+	return string(old), "changed", nil
+}
+
+// ingestPrior 是「这条改写之前那一份」，只为落盘前那条 diff 活着。
+type ingestPrior struct {
+	Path  string
+	Old   string
+	New   string
+	IsNew bool
 }
 
 func ingestAnyChanged(vs []ingestFileView) bool {
@@ -444,6 +503,12 @@ func printIngest(out ingestOut) {
 			lead = "           "
 		}
 		fmt.Printf("%s%s %s（%d 字节）\n", lead, padRight(f.Path, 34), label, f.Bytes)
+	}
+	if len(out.Patch) > 0 {
+		fmt.Printf("\n  改动（unified diff，顶格那份可以直接喂 git apply -p1）\n\n")
+		for _, ln := range out.Patch {
+			fmt.Println(ln)
+		}
 	}
 	if len(out.Refused) > 0 {
 		fmt.Printf("\n🚫 拒收 %d 条 —— 真 vault 一行没动\n", len(out.Refused))

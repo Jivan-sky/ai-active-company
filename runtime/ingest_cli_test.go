@@ -361,3 +361,133 @@ func TestIngestProposalShapeRefusals(t *testing.T) {
 		t.Fatalf("缺 --from 该是用法错（退出码 2），实际 %d：\n%s", code, out)
 	}
 }
+
+// ---------- 落盘前那条 diff（--patch）与出厂形状（--dump-shape）----------
+//
+// 盯的是 #47 剩下的那半：「智能出提案、人 review 后再落」这一步要有东西可看。
+// 提案里装的是整份文件全文，光看 JSON 看不出改了哪几行 —— 所以 review 看的是这份 diff。
+
+func TestIngestPatchShowsTheDiff(t *testing.T) {
+	vault := ingestVault(t)
+	changed := swapLine(t, readFile(t, filepath.Join(vault, "members", "alice", "persona.md")), "display_name", "Alice2")
+	prop := proposalFile(t, "proposal.json", map[string]any{
+		"by":     "张三",
+		"writes": []map[string]string{{"path": "members/alice/persona.md", "content": changed}},
+	})
+	before := snapshot(t, vault)
+
+	out, code := capture(t, func() int { return cmdIngest([]string{vault, "--from", prop, "--dry-run", "--patch"}) })
+	if code != 0 {
+		t.Fatalf("空跑该通过（退出码 0），实际 %d：\n%s", code, out)
+	}
+	for _, want := range []string{
+		"--- a/members/alice/persona.md",
+		"+++ b/members/alice/persona.md",
+		"@@ ",
+		"-display_name:",
+		"+display_name: Alice2",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("diff 里该有 %q，实际：\n%s", want, out)
+		}
+	}
+	if !reflect.DeepEqual(before, snapshot(t, vault)) {
+		t.Fatal("--patch 只是给人看的那一眼，一行都不该落")
+	}
+}
+
+// 不给 --patch 时，出口与从前逐字一样 —— 新东西是加出来的，不是改出来的。
+func TestIngestWithoutPatchKeepsOldOutput(t *testing.T) {
+	vault := ingestVault(t)
+	changed := swapLine(t, readFile(t, filepath.Join(vault, "members", "alice", "persona.md")), "display_name", "Alice2")
+	prop := proposalFile(t, "proposal.json", map[string]any{
+		"by":     "张三",
+		"writes": []map[string]string{{"path": "members/alice/persona.md", "content": changed}},
+	})
+	out, code := capture(t, func() int { return cmdIngest([]string{vault, "--from", prop, "--dry-run"}) })
+	if code != 0 {
+		t.Fatalf("空跑该通过，实际 %d：\n%s", code, out)
+	}
+	if !strings.Contains(out, "改到") {
+		t.Fatalf("改到哪几个文件那一行不该动：\n%s", out)
+	}
+	for _, bad := range []string{"--- a/", "@@ -"} {
+		if strings.Contains(out, bad) {
+			t.Fatalf("没给 --patch 就不该打 diff（%q）：\n%s", bad, out)
+		}
+	}
+}
+
+// 拒收时不该配 diff：那条提案一条都落不下去，给一份 diff 只会让人以为「就差点头了」。
+func TestIngestPatchIsSilentOnRefusal(t *testing.T) {
+	vault := ingestVault(t)
+	bad := swapLine(t, readFile(t, filepath.Join(vault, "members", "alice", "persona.md")), "role", "不存在的岗位")
+	prop := proposalFile(t, "proposal.json", map[string]any{
+		"by":     "张三",
+		"writes": []map[string]string{{"path": "members/alice/persona.md", "content": bad}},
+	})
+	out, code := capture(t, func() int { return cmdIngest([]string{vault, "--from", prop, "--dry-run", "--patch"}) })
+	if code != 1 {
+		t.Fatalf("红档该拒收（退出码 1），实际 %d：\n%s", code, out)
+	}
+	if strings.Contains(out, "@@ -") {
+		t.Fatalf("被拦住的提案不该配 diff：\n%s", out)
+	}
+}
+
+// 形状是数据：能解析、白名单只有一处说了算、不需要 vault。
+func TestIngestDumpShapeNeedsNoVault(t *testing.T) {
+	out, code := capture(t, func() int { return cmdIngest([]string{"--dump-shape"}) })
+	if code != 0 {
+		t.Fatalf("问形状不该要 vault（退出码 0），实际 %d：\n%s", code, out)
+	}
+	var shape struct {
+		Shape     string   `json:"shape"`
+		Whitelist string   `json:"whitelist"`
+		Rules     []string `json:"rules"`
+	}
+	if err := json.Unmarshal([]byte(out), &shape); err != nil {
+		t.Fatalf("出厂形状得是能解析的 JSON（能力件照它说话，解析不了就等于没有）：%v\n%s", err, out)
+	}
+	if shape.Shape != "anc.ingest.proposal/v1" {
+		t.Fatalf("形状版本变了？拿到 %q", shape.Shape)
+	}
+	if shape.Whitelist != ingestWhitelist {
+		t.Fatalf("形状里的白名单该就是 ingestWhitelist（只有一处说了算），拿到 %q", shape.Whitelist)
+	}
+	if len(shape.Rules) == 0 {
+		t.Fatal("形状里得把「多出来的字段一律报错」这类不许猜的规矩写出来")
+	}
+}
+
+// JSON 出口同理：不给 --patch 就不许多出那个键（机器读的那一侧不该为它加分支）。
+func TestIngestJSONWithoutPatchHasNoPatchKey(t *testing.T) {
+	vault := ingestVault(t)
+	changed := swapLine(t, readFile(t, filepath.Join(vault, "members", "alice", "persona.md")), "display_name", "Alice2")
+	prop := proposalFile(t, "proposal.json", map[string]any{
+		"by":     "张三",
+		"writes": []map[string]string{{"path": "members/alice/persona.md", "content": changed}},
+	})
+	out, code := capture(t, func() int { return cmdIngest([]string{vault, "--from", prop, "--dry-run", "--json"}) })
+	if code != 0 {
+		t.Fatalf("空跑该通过，实际 %d：\n%s", code, out)
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("--json 该出纯 JSON：%v\n%s", err, out)
+	}
+	if _, ok := got["patch"]; ok {
+		t.Fatalf("没给 --patch 就不该有 patch 这个键：\n%s", out)
+	}
+	// 给了就得有 —— 不然「机器出口也看得到 diff」这句就是空话。
+	out2, _ := capture(t, func() int { return cmdIngest([]string{vault, "--from", prop, "--dry-run", "--json", "--patch"}) })
+	var got2 struct {
+		Patch []string `json:"patch"`
+	}
+	if err := json.Unmarshal([]byte(out2), &got2); err != nil {
+		t.Fatalf("--json --patch 该出纯 JSON：%v\n%s", err, out2)
+	}
+	if len(got2.Patch) == 0 {
+		t.Fatalf("给了 --patch，机器出口里就该有 patch：\n%s", out2)
+	}
+}

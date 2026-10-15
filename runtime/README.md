@@ -272,7 +272,8 @@ anc org export <vault>            # stdout 出一份 JSON，消费方自己重�
 ### 外部材料进真相源（`anc ingest`）
 
 ```
-anc ingest <vault> --from <提案.json|-> [--dry-run] [--json]
+anc ingest <vault> --from <提案.json|-> [--dry-run] [--patch] [--json]
+anc ingest --dump-shape            出厂提案形状（数据）；不需要 vault
 ```
 
 真相源的写者**只许有两类**：人手改 markdown，或者这条管道。第三方系统（含客户自己的知识库）
@@ -296,7 +297,14 @@ anc ingest <vault> --from <提案.json|-> [--dry-run] [--json]
   第 1–3 步真 vault 一行没动。
 - **一条都没变**（逐字相同）→ 不落盘、也不记审计：同一个改动留两条痕，账会失真。
 - **它不 git commit**：历史归人 —— 落完自己 `git diff` 看一眼再提交。
-- 智能那半（harness 出提案）**只提案、不落盘**：它出 patch，人 review 后由这条管道落。
+- **落盘前那一眼**：`--patch` 把「这份提案会改成什么样」打成 unified diff（与 git 那份同形状，
+  顶格那份可以直接喂 `git apply -p1`）。提案里装的是整份文件全文，光看 JSON 看不出改了哪几行 ——
+  这一步就是给 review 用的；**被红档拦住时不打 diff**（那种提案一条都落不下去，配 diff 只会让人以为就差点头了）。
+  不给 `--patch` 时两个出口与从前逐字一样（有用例钉着）。
+- **形状是数据**：`anc ingest --dump-shape` 把出厂提案形状打出来（字段 / 白名单 / 规矩 / 边界），
+  给 harness 那一面照它说话，不抄文档（抄一份迟早漂）。白名单也来自同一处常量。
+- 智能那半（harness 出提案）**只提案、不落盘**：给它的能力件在 `../skill/anc-ingest-propose/`
+  —— 它读形状、读现状、出提案，自检走 `--dry-run --patch`，**落盘仍由人点头后跑这条管道**。
 
 设计记录见 `DESIGN.md` §7.1.50。
 ### 看板（`anc board serve`）

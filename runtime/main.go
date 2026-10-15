@@ -172,7 +172,8 @@ func usage() {
   anc org init <目录> --client <客户名> --id <ascii-id>
                                     生成 org 真相源骨架（vault 模板）
   anc org export <vault>            投影成看板消费的只读 JSON（打到 stdout）
-  anc ingest <vault> --from <提案.json|-> [--dry-run]
+  anc ingest <vault> --from <提案.json|-> [--dry-run] [--patch]
+  anc ingest --dump-shape            出厂提案形状（数据）；给 harness 那一面照它说话
                                     外部材料进真相源的唯一机器入口：先校验（同一张规则表）再整份替换落盘，不 commit
   anc board serve <vault> [--addr 127.0.0.1:8787]
                                     起只读看板（前端已嵌在二进制里；默认只绑本机）
