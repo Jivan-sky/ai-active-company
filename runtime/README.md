@@ -892,4 +892,5 @@ pwsh -File build.ps1 -Only local  # 只编本机 windows/amd64
 
 - 装配器**只写目标目录**，不动系统、不改全局配置（`--git` 用的是局部身份 `anc/anc@local`，不碰你的 git 全局配置）。
 - 凭证一律不进仓库。
+- **两个家，各管各的**（议题 #24）：`~/.anc/`（700）放**这一台机**上与客户无关的东西 —— `bin/` · `secrets.env` · `host.json`；**这一个客户库**的部署产物按旗标走、默认落在 **vault 的兄弟目录** —— `--config` = `<vault>/../gateway/config.toml` · `--homes` = `<vault>/../homes` · `--data` = `<vault>/../data`（**绝不写进 vault**，git 只放 org 真相）。平台约定位置（macOS `~/Library/LaunchAgents/` / Linux `~/.config/systemd/user/` / Windows 计划任务库）由上游 `cc-connect daemon install` 自己写。落点全表见 `docs/M1-DESIGN.md` §主机局部状态。
 - 本模块是**工程实现**；ANC 的完整理论口径见 `../SPEC.md`。

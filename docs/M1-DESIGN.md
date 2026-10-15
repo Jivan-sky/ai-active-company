@@ -59,7 +59,26 @@ ai-native-company/
 
 模块约束:`commands/*` 只做参数解析与编排,逻辑全在下层;`render/*` 是纯函数(Org → 字符串),不碰磁盘——可测性即正确性。
 
-**主机局部状态(不进 git)**:`~/.anc/`(700)= `host.json`(cc-connect 路径与 pin 版本、config 路径、vault 本机路径)、`secrets.env`(600)、`bin/`(gateway.sh 等渲染后脚本)、`homes/<member>/`(bot 家目录,attachments/ 在其下)、`logs/`、`backups/`。**git = org 真相,`~/.anc` = 部署参数,两者不混**——vault_root 这类单机路径绝不写进 org 仓库(org 经 git 同步到多机时路径只对一台机成立)。
+**主机局部状态(不进 git)**:分**两个家**,各管各的(议题 #24 收口;原来那处可见目录 `~/anc/tasks/` 随 `anc service` 一起退役)。**git = org 真相,两者都 = 部署参数,三者不混**——vault_root 这类单机路径绝不写进 org 仓库(org 经 git 同步到多机时路径只对一台机成立)。
+
+**家一:`~/.anc/`(700)—— 这一台机上与「哪个客户」无关的东西**
+
+| 落点 | 装什么 | 谁写它 | 今天 |
+|---|---|---|---|
+| `host.json` | cc-connect 路径与 pin 版本、config 路径、vault 本机路径 | 装机人(PLAN.md 第 1 步) | **活的**;`anc doctor` 不读它,升级回归靠人比对 |
+| `secrets.env`(600) | 明文凭据 | 装机人;`anc apply --secrets` 读它 | **活的**;脱敏表也读这一个默认路径 |
+| `bin/` | cc-connect 二进制(不挂全局 PATH)与渲染后脚本 | `anc apply` + 人工 pin | **活的** |
+| `homes/<member>/` · `logs/` · `backups/` | bot 家目录(attachments/ 在其下);日志;配置备份 | —— | **设计意图,今天还没落**——今天的 homes 在「家二」(见下) |
+
+**家二:vault 的兄弟目录 —— 这一个客户库的部署产物**(按旗标走;`anc render` / `anc apply` 的默认)
+
+| 旗标 | 默认 | 装什么 |
+|---|---|---|
+| `--config` | `<vault>/../gateway/config.toml` | 渲染产物 |
+| `--homes` | `<vault>/../homes/<member>/` | 每 bot 的 cwd 与 `state/` |
+| `--data` | `<vault>/../data` | gateway 的 data_dir(socket / sessions) |
+
+**平台约定位置(不是我们挑的,必须遵守)**:macOS `~/Library/LaunchAgents/` · Linux `~/.config/systemd/user/` · Windows 计划任务库(在册,不是一个路径)。由上游 `cc-connect daemon install` 自己写。
 
 ## 3. org 真相源 schema(markdown + frontmatter)
 
