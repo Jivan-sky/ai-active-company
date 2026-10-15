@@ -117,12 +117,13 @@ func (s *Server) handleGrants(w http.ResponseWriter, r *http.Request) {
 	// 视角：要的是**主体**（成员 / 业务 agent）。认不出就说认不出 --
 	// 岗位 / 域不是主体（域是客体，SPEC §6），它们不该被当成「我在看谁」。
 	// 滤不滤由**给没给** who 定（不是由认没认出来定）：认不出 → 一条都不命中 → 空表 + 认不出。
-	scopeKey := ""
+	// 视角解出来的**主体**（不是那个拼法）：命中判据要用它，且要与出站读出口共用同一支。
+	var scopeIDN *org.Identity
 	if view.Scope.Ref != "" {
 		if idn, ok := o.Identity(view.Scope.Ref); ok {
 			view.Scope.Known = true
 			view.Scope.Who = ctxpack.IdentityOf(o, idn)
-			scopeKey = identityKey(idn.Kind, idn.Ref)
+			scopeIDN = &idn
 		} else {
 			view.Scope.Why = "真相源里没有这个编号身份（写法：成员名 | 业务 agent 的 slug）-- " +
 				"岗位与域不是主体，不能当视角（域是客体，SPEC §6）"
@@ -138,17 +139,14 @@ func (s *Server) handleGrants(w http.ResponseWriter, r *http.Request) {
 			Who: []GrantsRef{},
 			Hit: view.Scope.Ref == "",
 		}
-		for _, slot := range []struct{ name, raw string }{
-			{"from", g.From}, {"to", g.To}, {"on_behalf_of", g.OnBehalfOf},
-		} {
-			if strings.TrimSpace(slot.raw) == "" {
-				continue
-			}
-			ref := resolveGrantRef(o, slot.name, slot.raw)
-			row.Who = append(row.Who, ref)
-			if scopeKey != "" && refKey(ref) == scopeKey {
-				row.Hit = true
-			}
+		// 哪几格指人：共用 org.GrantSlots（与出站读出口同一处定义）。
+		for _, slot := range org.GrantSlots(g) {
+			row.Who = append(row.Who, resolveGrantRef(o, slot.Slot, slot.Raw))
+		}
+		// 命中判据共用 org.GrantHitsSubject —— 2026-10-16（议题 #68）：bot 侧那个
+		// 「只出与我相关的几条」的视图问的是同一个问题，尺子不能有两把。
+		if scopeIDN != nil && org.GrantHitsSubject(o, g, *scopeIDN) {
+			row.Hit = true
 		}
 		all = append(all, row)
 	}
@@ -261,17 +259,6 @@ func resolveGrantRef(o *org.Org, slot, raw string) GrantsRef {
 		ref.Note = "认不出的写法（前缀 " + kind + " 没有定义处）"
 	}
 	return ref
-}
-
-// refKey 是「这个引用指的是同一个主体吗」的比对键。
-//
-// 只对**主体**成立（成员 / 业务 agent）：岗位与域不是主体，一律给空键 --
-// 这样它们既不会被视角命中，也不会与别的引用撞车。
-func refKey(r GrantsRef) string {
-	if r.Identity == nil {
-		return ""
-	}
-	return identityKey(r.Identity.Kind, r.Identity.Ref)
 }
 
 // identityKey 与视图的其余部分同一把尺子：kind + 编号身份。

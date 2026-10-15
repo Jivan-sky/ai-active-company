@@ -37,6 +37,7 @@ type Out struct {
 	Projects   []ProjectOut `json:"projects,omitempty"`     // 挂在你可见域上的项目
 	Todo       []TaskOut    `json:"todo,omitempty"`         // 派给我的待办（热层 to == 我）；只读，不在这儿改状态
 	Doing      []TaskOut    `json:"doing,omitempty"`        // 我正在做的（热层 by == 我）
+	Grants     *GrantsOut   `json:"grants,omitempty"`       // 我被允许做什么 —— **只出与我相关的几条**（bot 侧那个视图，议题 #68）
 	Gaps       []string     `json:"gaps,omitempty"`         // 这份上下文答不了什么（报缺，不编）
 	Note       string       `json:"note,omitempty"`         // 只在「还没给你划域」时出现
 	Refused    *Refusal     `json:"refused,omitempty"`      // 拒：不给数据，给理由（能指路就指路）
@@ -126,6 +127,46 @@ type TaskOut struct {
 	Project string `json:"project,omitempty"`
 	Note    string `json:"note,omitempty"`
 	AsOf    string `json:"as_of,omitempty"` // 这个当前值是「什么时候的」—— 新鲜度靠它，不靠 TTL
+}
+
+// GrantsOut 是「我被允许做什么」—— bot 侧那个**按人过滤**的视图（议题 #68）。
+//
+// 与看板「授权」页（全量）是**两份产物、不共用**：两个消费者、两个视图
+// （共用迟早把全表漏给 bot）。但**尺子共用** —— 命中判据是 org.GrantHitsSubject，
+// 与看板那个视角同一支：这两个视图答的是同一个问题。
+//
+// 四条口径：
+//
+//  1. **只筛、不改写**：字段原样搬（SPEC §6 那七个 + slug / path）。转述一遍就是多一处会漂的副本。
+//  2. **Total 不受视角影响**：藏起「全表一共几条」就是藏事实 —— 看得见的只有与它相关的，
+//     但「还有多少条不归你」这一格照样给。
+//  3. **一条都没有 = 什么都不通**：SPEC §6 不变量 1（没有 grant 就是不通）。这句在 Note 里说清，
+//     别让读的人把「表是空的」读成「我没权限看表」。
+//  4. **它按主体算，不按域切**：授权表的客体可能是跨域的通道，切不出「这一块业务的那几条」——
+//     所以这一块与 Todo / Doing / Gaps 同一条规矩：**只在要「全部」时给**。
+type GrantsOut struct {
+	Schema string        `json:"schema"`
+	Total  int           `json:"total"` // 全表一共几条（不受视角影响）
+	Shown  int           `json:"shown"` // 与这个主体相关的几条
+	Rows   []GrantRowOut `json:"rows"`
+	Note   string        `json:"note,omitempty"`
+}
+
+// GrantsSchema 是这一块的版本号（同看板那几页的理由：字段就是契约）。
+const GrantsSchema = "anc.context.grants/v1"
+
+// GrantRowOut 一行授权：**原样搬**，不转述（与看板 §7.1.53 那一页同一份字段清单）。
+type GrantRowOut struct {
+	Slug       string `json:"slug"`
+	Path       string `json:"path"`
+	From       string `json:"from"`
+	To         string `json:"to"`
+	Action     string `json:"action"`
+	Object     string `json:"object"`
+	TTL        string `json:"ttl"`
+	OnBehalfOf string `json:"on_behalf_of"`
+	Reason     string `json:"reason"`
+	Body       string `json:"body"`
 }
 
 // TasksIn 是「派给我的待办」这一块的输入：热层当前值的一份快照。
@@ -254,7 +295,12 @@ func Assemble(o *org.Org, vault, who, onBehalf, ask string, now time.Time, tasks
 	if ask == "" {
 		out.Todo, out.Doing = taskRows(subj.Ref, tasks)
 	}
-	// 报缺只在要「全部」时给：要单独一域的人不该被一段通用说明淹掉。
+	// 「我被允许做什么」—— bot 侧那个**按人过滤**的视图（议题 #68）。
+	// 与 Todo / Doing 同一条规矩：只在要「全部」时给 —— 授权按**主体**算（客体可能是跨域的通道），
+	// 切不出「这一块业务的那几条」，硬塞进单域问里就是编。
+	if ask == "" {
+		out.Grants = grantRows(o, subj)
+	} // 报缺只在要「全部」时给：要单独一域的人不该被一段通用说明淹掉。
 	if ask == "" {
 		out.Gaps = contextGaps(out, tasks)
 	}
@@ -360,6 +406,39 @@ func taskRows(ref string, tasks TasksIn) (todo, doing []TaskOut) {
 	sort.Slice(todo, func(i, j int) bool { return todo[i].ID < todo[j].ID })
 	sort.Slice(doing, func(i, j int) bool { return doing[i].ID < doing[j].ID })
 	return todo, doing
+}
+
+// grantRows 组「我被允许做什么」那一块：**只出与这个主体相关的行**。
+//
+// 命中判据借 org.GrantHitsSubject（与看板那个视角**同一支** —— 两个视图答的是同一个问题），
+// 这里只负责摆盘：字段原样搬、total 给全表数、空表把「空就是不通」说清楚、
+// 并明说这一份是**视图**不是访问控制。
+func grantRows(o *org.Org, subj org.Identity) *GrantsOut {
+	out := &GrantsOut{
+		Schema: GrantsSchema,
+		Total:  len(o.Grants),
+		Rows:   []GrantRowOut{},
+		Note: "只出**与你相关**的几条（`from` / `to` / `on_behalf_of` 里指着你的）· " +
+			"`total` 是全表一共多少条，不受这一份视图影响 · " +
+			"这一份是**视图**、不是全量（全量在看板「授权」页）：它的过滤依据是 `who`，" +
+			"而 `who` 是请求里带的自报值、**还没验过**（与接入面身份那一层同一件事）—— 所以它不是访问控制。",
+	}
+	for _, g := range o.Grants {
+		if !org.GrantHitsSubject(o, g, subj) {
+			continue
+		}
+		out.Rows = append(out.Rows, GrantRowOut{
+			Slug: g.Slug, Path: g.Path,
+			From: g.From, To: g.To, Action: g.Action, Object: g.Object,
+			TTL: g.TTL, OnBehalfOf: g.OnBehalfOf, Reason: g.Reason, Body: g.Body,
+		})
+	}
+	out.Shown = len(out.Rows)
+	if out.Total == 0 {
+		out.Note = "授权表是**空的**（`grants/` 里一条都没有）—— 按 SPEC §6 不变量 1「没有 grant 就是不通」，" +
+			"现在什么都不通。这不是「你没权限看表」。"
+	}
+	return out
 }
 
 // contextGaps 明说「这份上下文答不了什么」。**只列没有真相源的那几样** ——

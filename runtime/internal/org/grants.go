@@ -231,3 +231,73 @@ func relSlash(root, path string) string {
 	}
 	return filepath.ToSlash(rel)
 }
+
+// ---- 「这条授权与我相关吗」—— 一把共用的尺子 ----
+//
+// 2026-10-16（议题 #68）：授权这条路上有**两个消费者** —— 看板上的人（全量 + 视角）与
+// bot 侧那个「只出与我相关的几条」的视图。两个视图答的是**同一个问题**（这条权是不是指着你），
+// 所以尺子只能有一把：各写一份，迟早出现「看板说这条与他相关、出口说无关」。
+//
+// 这一节只做**判据**，不做展示：看板要把引用解成「岗位 / 域 / 认不出」，出口只回原样字段，
+// 那是各自的台面，不在这把尺子里。
+
+// GrantSlot 是一条授权里**会指名道姓**的一个格子：原文照留，不解释。
+type GrantSlot struct {
+	Slot string // from | to | on_behalf_of
+	Raw  string
+}
+
+// GrantSlots 摊出一条授权里会指着主体的那几格。
+//
+// SPEC §6 那七个字段里只有这三格指人。**空格子不出现** ——「没写」与「写了但认不出」
+// 是两件事：后者要留给人看见（看板把那格标出来），前者没什么可看的。
+func GrantSlots(g Grant) []GrantSlot {
+	out := make([]GrantSlot, 0, 3)
+	for _, s := range []GrantSlot{
+		{Slot: "from", Raw: g.From},
+		{Slot: "to", Raw: g.To},
+		{Slot: "on_behalf_of", Raw: g.OnBehalfOf},
+	} {
+		if strings.TrimSpace(s.Raw) == "" {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// IdentityForRef 把一个格子里的写法解成**主体**（成员 / 业务 agent）。
+//
+// 与 Identity 同一把尺子（先成员、后业务 agent，顺序写死），只多一层前缀处理：
+// 裸名字 / `member:` / `agent:` 才当主体；`role:` 与 `domain:` **明确不是主体** ——
+// 岗位是「一类人」而不是一个编号身份，域是**客体**（SPEC §6：域不会授权）。
+//
+// 于是一条授权写 `to: role:manager` 时，它**不**命中任何一个具体人的「与我相关」——
+// 这不是漏判，是「这条权给的是一个岗位，不是这个编号」。要判「我在不在这个岗位上」，
+// 那是另一件事（岗位 → 人的展开在渲染那边），不混进这条判据。
+func (o *Org) IdentityForRef(raw string) (Identity, bool) {
+	kind, name := SplitRef(raw)
+	switch kind {
+	case "", "member", "agent":
+		return o.Identity(name)
+	default:
+		return Identity{}, false
+	}
+}
+
+// GrantHitsSubject 判一条授权是不是「与这个主体相关」。
+//
+// 判据只有一条：三格里任意一格解出来是**同一个编号身份**。看板的视角与 bot 侧的视图共用它。
+// 比的是**解出来的**编号（kind + ref），不是请求里那个拼法 —— 同身份那条纪律。
+func GrantHitsSubject(o *Org, g Grant, idn Identity) bool {
+	if o == nil || strings.TrimSpace(idn.Ref) == "" {
+		return false
+	}
+	for _, s := range GrantSlots(g) {
+		other, ok := o.IdentityForRef(s.Raw)
+		if ok && other.Kind == idn.Kind && other.Ref == idn.Ref {
+			return true
+		}
+	}
+	return false
+}
