@@ -297,6 +297,11 @@ func cmdApply(args []string) int {
 		// 照那句话去查是白花时间（2026-10-08 实测：Windows 上真因是任务被电源条件挡住，见议题 #42）。
 		if rep, err := probe.Run(probeOpts); err == nil && rep.Gateway == "down" {
 			fmt.Fprintf(os.Stderr, "  🔎 探针：gateway 没在跑（socket 拨不通）—— 病在「起没起来」，不在凭据。\n")
+			// 「没起来」不止一种：问到「现在挡着它的那条」为止（议题 #42 要的那一步）。
+			// 只读、不改上游任务；问不到就照实说问不到。
+			for _, line := range whyDaemonDown(runtime.GOOS) {
+				fmt.Fprintf(os.Stderr, "  %s\n", line)
+			}
 			fmt.Fprintf(os.Stderr, "FIX: %s\n", startupHint(runtime.GOOS))
 			return 1
 		}
@@ -716,9 +721,9 @@ func diagnose(tail string) string {
 func startupHint(goos string) string {
 	switch goos {
 	case "windows":
-		return "看计划任务状态 `schtasks /query /tn cc-connect /v /fo LIST`。" +
-			"上游那份任务带「电池供电不启动 / 停止」两条设置，笔记本上会被它挡住（议题 #42）；" +
-			"也可以手工跑一次装载体 ~/.cc-connect/cc-connect-daemon.ps1，看它自己报什么。"
+		return "看计划任务状态 `schtasks /query /tn cc-connect /v /fo LIST`（定义里读得到的那几样，" +
+			"上面那一组已经核过一遍）；也可以手工跑一次装载体 ~/.cc-connect/cc-connect-daemon.ps1，" +
+			"看它自己报什么。"
 	case "linux":
 		return "看单元状态 `systemctl --user status cc-connect`。" +
 			"刚写过 drop-in 时最容易少一次 daemon-reload；也可以手工跑一次 ~/.anc/bin/cc-connect，看它自己报什么。"
