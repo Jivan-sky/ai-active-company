@@ -74,6 +74,36 @@ type AssetsView = {
   charters: number; note: string; error?: string;
 };
 
+// 授权表（`/api/grants`，schema = anc.board.grants/v1）—— 「谁被允许对谁做什么」。
+//
+// 与「数据流」页的分工：那一页答「通道开着吗」（上游 config 的策略面 + 执行面事实），
+// 这一页只答授权表本身。**全量、不筛选**（看板是观测面）—— 授权表里本来就没有凭据
+// （SPEC §6：它记的是「谁被允许做什么」），所以这一页也没有 app_id / app_secret。
+//
+// 主体那一格解的是**编号身份**（成员名 / 业务 agent 的 slug），与「上下文」页同一把尺子：
+// 认不出的照原样留着并标出来，不猜。
+type GrantIdentity = {
+  kind: string; ref: string; name?: string; role?: string;
+  domain?: string; domain_name?: string; inscription?: string;
+};
+type GrantRef = {
+  slot: string; raw: string; kind: string; name?: string;
+  note?: string; identity?: GrantIdentity;
+};
+type GrantRow = {
+  slug: string; path: string; from: string; to: string; action: string; object: string;
+  ttl: string; on_behalf_of: string; reason: string; body: string;
+  who: GrantRef[]; hit: boolean;
+};
+// scope.known=false（带了个认不出的 who）时**不给全量表** —— 那会被读成「他的权限是全部」；
+// 也不给一份空表冒充「他什么都没有」，而是照实说认不出。不带 who（ref 为空）= 全量，另一回事。
+type GrantScope = { ref: string; known: boolean; who?: GrantIdentity; why?: string };
+type GrantsView = {
+  schema: string; wired: boolean; total: number; shown: number;
+  scope: GrantScope; rows: GrantRow[]; subjects: GrantIdentity[];
+  findings: Finding[]; missing: string[]; note: string; error?: string;
+};
+
 // 决策与执行的留存（`/api/timeline`，schema = anc.timeline/v1）—— 读者：跟进的人 / 老板。
 // 这一页给的是**人和 agent 自己写下来的**记录（`anc timeline add`），不是从会话里推出来的。
 // 三档只按 status 配色、形状跟「档」走（实心圆 / 带光环的圆 / 菱形 / 空心虚线圈，见 index.html 的 .dot）；
@@ -206,6 +236,7 @@ type Data = {
   audit: AuditView | null; auditErr: string;
   approvals: ApprovalView | null; approvalsErr: string;
   context: ContextView | null; contextErr: string;
+  grants: GrantsView | null; grantsErr: string;
   err: string;
 };
 
@@ -369,7 +400,7 @@ function contract<T extends { schema?: string }>(res: Fetched<T>, label: string)
 }
 
 async function fetchData(): Promise<Data> {
-  const [boardRes, issuesRes, runtimeRes, dataflowRes, assetsRes, timelineRes, auditRes, approvalsRes, hotRes, ctxRes] = await Promise.all([
+  const [boardRes, issuesRes, runtimeRes, dataflowRes, assetsRes, timelineRes, auditRes, approvalsRes, hotRes, ctxRes, grantsRes] = await Promise.all([
     getJSON<BoardView & { error?: string }>("/api/board"),
     getJSON<Issues>("/api/issues"),
     getJSON<RuntimeView>("/api/runtime"),
@@ -384,6 +415,8 @@ async function fetchData(): Promise<Data> {
     // 上下文那一页：选中的人进 hash（#/context?who=alice），所以取数也照 URL 来 ——
     // 刷新、把链接发给别人、前进后退，看到的都是同一个人。
     getJSON<ContextView>("/api/context" + ctxQuery()),
+    // 授权表那一页：视角也在 hash 里（#/grants?who=bizbot），所以取数照 URL 来。
+    getJSON<GrantsView>("/api/grants" + grantsQuery()),
   ]);
   const issues = issuesRes.body ?? emptyIssues(issuesRes.err);
   const rt = contract(runtimeRes, "运行态");
@@ -394,12 +427,14 @@ async function fetchData(): Promise<Data> {
   const ap = contract(approvalsRes, "待批队列");
   const ho = contract(hotRes, "热层");
   const cx = contract(ctxRes, "工作上下文");
+  const gr = contract(grantsRes, "授权表");
   const schema = boardRes.body?.schema;
   if (boardRes.body && typeof schema === "string" && schema !== "") {
     return {
       board: boardRes.body, issues, err: "",
       hot: ho.v, hotErr: ho.err,
       context: cx.v, contextErr: cx.err,
+      grants: gr.v, grantsErr: gr.err,
       runtime: rt.v, runtimeErr: rt.err,
       dataflow: df.v, dataflowErr: df.err,
       assets: as.v, assetsErr: as.err,
@@ -413,6 +448,7 @@ async function fetchData(): Promise<Data> {
     board: null, issues, err: why,
     hot: ho.v, hotErr: ho.err,
     context: cx.v, contextErr: cx.err,
+    grants: gr.v, grantsErr: gr.err,
     runtime: rt.v, runtimeErr: rt.err,
     dataflow: df.v, dataflowErr: df.err,
     assets: as.v, assetsErr: as.err,
@@ -674,10 +710,12 @@ function renderRuntime(d: Data): Kid[] {
   return out;
 }
 
-// 数据流 —— 读者：管理者 / 老板。这一页现在只有**策略面**：
+// 数据流 —— 读者：管理者 / 老板。问题句只有「通道开着吗 / 每个 bot 手里有什么」两件 ——
 //   ① 执行面（gateway 实际吃的那份 config.toml）里通道的口径 —— 上游默认开着，所以「没写」也是事实；
 //   ② 真相源算出来的「每个 bot 手里有什么」。
 // 事件面（谁尝试连了哪、有没有越权尝试）没有数据源，所以在页尾如实列缺 —— 不画通道图充数。
+// 注：这句原来写的是「谁可以做什么、通道开着吗？」—— 「谁可以做什么」自 2026-10-15 起归「授权」页
+// （#/grants，读真相源 `grants/`）：那一页答授权表，这一页答执行面，两个数据源、两个变化节奏。
 function renderDataflow(d: Data): Kid[] {
   const v = d.dataflow;
   if (!v) {
@@ -1264,6 +1302,153 @@ function renderAudit(d: Data): Kid[] {
   return out;
 }
 
+// ---------- 授权表页：谁被允许对谁做什么 ----------
+//
+// 读者：管理者 / 想知道「谁被允许做什么」的人。这一页只回答**一个问题**（授权表本身）：
+// 「通道开没开」在「数据流」页（那里的数据源是上游 config，跟这里不是一份）。
+//
+// 视角（`#/grants?who=<编号身份>`）是这一页的**位置**，不是状态：进 URL，刷新 / 前进后退 /
+// 把链接发给别人，都还停在同一个主体上；不带 who 就是全量。换视角只重取这一份（见 loadGrants）。
+
+const grantKindLabel = (kind: string): string =>
+  kind === "agent" ? "业务 agent" : kind === "member" ? "成员"
+    : kind === "role" ? "岗位" : kind === "domain" ? "业务域" : "认不出";
+
+// 面包屑：这一页在哪、正以谁的视角看。视角**有效还不够，得看得见** —— 否则读的人不知道
+// 手里这一份是谁的那一份（服务端认不出时也照实写「认不出」）。
+function grantsCrumb(v: GrantsView): Kid {
+  const parts: Kid[] = [
+    el("a", { href: "#/grants" }, "看板"),
+    el("span", { class: "sep" }, "›"),
+    el("span", {}, "授权"),
+    el("span", { class: "sep" }, "｜"),
+  ];
+  const sc = v.scope;
+  if (sc.ref === "") {
+    parts.push(el("span", {}, "视角："), el("span", { class: "mono" }, "全量"));
+  } else if (!sc.known) {
+    parts.push(el("span", {}, "视角："), el("span", { class: "mono" }, sc.ref), " ", cannot("（认不出）"));
+  } else {
+    const w = sc.who!;
+    parts.push(el("span", {}, "视角："), el("span", { class: "mono" }, w.ref), " ",
+      el("span", { class: "chip" }, grantKindLabel(w.kind)));
+    if ((w.name ?? "") !== "" && w.name !== w.ref) parts.push(el("span", {}, " " + w.name));
+    if ((w.domain ?? "") !== "") {
+      parts.push(el("span", { class: "sep" }, "·"), el("span", {}, "归属 " + dash(w.domain_name === "" ? w.domain : w.domain_name)));
+    }
+  }
+  return el("p", { class: "crumb" }, ...parts);
+}
+
+// 一格主体：原文照写（那是要核对的东西）+ 解出来是谁。解不出来的**照原样留着**并说清为什么。
+function grantSubjectCell(r: GrantRow, slot: string): Kid {
+  const ref = r.who.find((w) => w.slot === slot);
+  if (!ref) return cannot("没写");
+  const raw = el("span", { class: "mono" }, ref.raw);
+  const id = ref.identity;
+  if (!id) {
+    return el("span", {}, raw, el("br"),
+      cannot(grantKindLabel(ref.kind) + (ref.note ? " · " + ref.note : "")));
+  }
+  const nm = (id.name ?? "") === "" ? id.ref : id.name;
+  const extra = (id.domain ?? "") !== "" ? " · " + dash(id.domain_name === "" ? id.domain : id.domain_name) : "";
+  return el("span", {}, raw, el("br"),
+    el("span", { class: "chip" }, grantKindLabel(id.kind)), " ",
+    el("span", {}, dash(nm) + extra));
+}
+
+// 视角选择器：只列**授权表里出现过的主体**（真相源算出来的名单）—— 不另给一份「所有人」的
+// 名单：这里能站的位置，就是表里真出现过的那些。名单由服务端给（不受当前视角影响，否则
+// 一筛就缩水，换不回全量、也换不到第二个人）。
+function grantPicker(v: GrantsView): Kid {
+  const links: Kid[] = [
+    el("a", { class: v.scope.ref === "" ? "pg on" : "pg", href: "#/grants" },
+      "全量 · " + String(v.total) + " 条"),
+  ];
+  for (const sub of v.subjects) {
+    const nm = (sub.name ?? "") === "" ? sub.ref : sub.name;
+    links.push(el("a", {
+      class: v.scope.ref === sub.ref ? "pg on" : "pg",
+      href: "#/grants?who=" + encodeURIComponent(sub.ref),
+    }, el("span", { class: "chip" }, grantKindLabel(sub.kind)), " ",
+      nm + "（" + sub.ref + "）"));
+  }
+  const now = v.scope.ref === ""
+    ? el("p", { class: "empty" }, "现在看的是**全量**：" + String(v.total) + " 条。")
+    : !v.scope.known
+      ? el("p", { class: "empty" }, cannot("认不出 " + v.scope.ref + "：" + dash(v.scope.why)),
+          " —— 认不出就不给表（给全量会被读成「他的权限是全部」，给空表会被读成「他什么都没有」）。")
+      : el("p", { class: "empty" },
+          "现在看的是 " + dash(v.scope.who?.ref) + " 相关的 " + String(v.shown) + " / " + String(v.total) + " 条（全表仍是 " + String(v.total) + " 条）。");
+  if (v.subjects.length === 0) {
+    return el("div", {}, now, emptyNote("表里还没出现过任何主体 —— 一条授权都还没有。"));
+  }
+  return el("div", {}, now, el("div", { class: "pager" }, ...links));
+}
+
+function grantEmpty(v: GrantsView): Kid {
+  if (v.scope.ref !== "" && v.scope.known) {
+    return emptyNote("这个视角下一条都没有：表里没有一条与它有关。" +
+      " —— 这**不等于**「它什么都做不了」：这一页只看真相源里写没写权，执行层拦不拦是另一页的事。");
+  }
+  return emptyNote("授权表是空的（`grants/` 里还没有条目）。这不算错：" +
+    "没有 grant 就是不通（SPEC §6 不变量 1）—— 表空只说明还没有给过任何一条权。");
+}
+
+function renderGrants(d: Data): Kid[] {
+  const v = d.grants;
+  if (!v) {
+    return [banner("bad", "读不到授权表", [
+      el("span", {}, d.grantsErr === "" ? "服务没回 anc.board.grants/v1" : d.grantsErr),
+    ])];
+  }
+  const out: Kid[] = [grantsCrumb(v)];
+  if ((v.error ?? "") !== "") {
+    out.push(banner("bad", "真相源读不动", [el("span", {}, dash(v.error))]));
+    return out;
+  }
+
+  out.push(section("这一页的口径", "", el("p", { class: "empty" }, dash(v.note))));
+
+  out.push(section("视角", "换一个主体，就只看与他有关的那几条；链接可以发给别人",
+    grantPicker(v)));
+
+  out.push(section("表里有什么",
+    "`grants/` 里逐条搬过来，一个字不改 —— 这一页是给人核对的",
+    v.rows.length === 0
+      ? grantEmpty(v)
+      : table(["谁给的", "给谁", "动作", "客体", "期限", "为什么", "落点"],
+          v.rows.map((r) => [
+            grantSubjectCell(r, "from"),
+            grantSubjectCell(r, "to"),
+            el("span", { class: "mono nw" }, dash(r.action)),
+            el("span", { class: "mono nw" }, dash(r.object)),
+            (r.ttl ?? "").trim() === ""
+              ? cannot("永久（没写期限）")
+              : el("span", { class: "mono" }, r.ttl),
+            dash(r.reason),
+            el("span", { class: "mono nw" }, r.path),
+          ]))));
+
+  out.push(section("授权表上的校验发现",
+    "与 `anc org check` 同一张规则表 —— 档次由规则表定，这一页不另判",
+    v.findings.length === 0
+      ? emptyNote("没有发现 —— 授权表这一层没报出问题。")
+      : el("ul", { class: "props" }, ...v.findings.map((f) => el("li", {},
+          el("span", { class: "chip mono" }, f.level), " ", findingLine(f))))));
+
+  out.push(section("这一页答不了什么", "如实列 —— 缺的部分不许用「图好看」补上",
+    el("ul", {}, ...v.missing.map((m) => el("li", {}, m)))));
+  return out;
+}
+
+// 授权表 —— 读者：管理者 / 想知道「谁被允许做什么」的人。
+// 页名是答案，问题句是它唯一要回答的那句话（与「数据流」页分开：那里答「通道开着吗」）。
+const grantsPage: Page = {
+  id: "grants", group: "组织", label: "授权", wired: true,
+  question: "谁被允许对谁做什么？", view: renderGrants,
+};
+
 // 审计 —— 读者：管理者 / 关心「谁碰了什么」的人。排在「时间线」后面：
 // 一个讲「人怎么说的」，一个讲「机器记下来的是什么」。
 const auditPage: Page = {
@@ -1299,7 +1484,7 @@ const runtimePage: Page = {
 };
 const dataflowPage: Page = {
   id: "dataflow", group: "运行", label: "数据流", wired: true,
-  question: "谁可以做什么、通道开着吗？", view: renderDataflow,
+  question: "通道开着吗、每个 bot 手里有什么？", view: renderDataflow,
 };
 // 页名还叫「沉淀」（那是这一块最终要回答的），但这一页现在只答得了「原料有哪些」——
 // 所以问题句按**现在真答得了**的写，不按以后的写。口径差在哪，页内写清了。
@@ -1339,6 +1524,16 @@ function ctxHref(who: string, domain = ""): string {
   const p = new URLSearchParams({ who });
   if (domain !== "") p.set("domain", domain);
   return "#/context?" + p.toString();
+}
+
+// 授权表那一页的视角（`#/grants?who=bizbot`）—— 同一条理由：位置进 URL，
+// 刷新 / 前进后退 / 把链接发给别人都还停在同一个主体上；不带就是全量。
+function grantsQuery(): string {
+  const who = (hashQuery().get("who") ?? "").trim();
+  if (who === "") return "";
+  const p = new URLSearchParams();
+  p.set("who", who);
+  return "?" + p.toString();
 }
 
 function ctxChip(label: string, href: string, on: boolean, mono = false): HTMLElement {
@@ -1702,7 +1897,7 @@ function paintSediment(scope: HTMLElement, motion: boolean): void {
     stream.append(tk);
   });
 }
-const PAGES: Page[] = [overviewPage, approvalsPage, orgPage, projectsPage, contextPage, timelinePage, auditPage, runtimePage, dataflowPage, assetsPage];
+const PAGES: Page[] = [overviewPage, approvalsPage, orgPage, projectsPage, contextPage, grantsPage, timelinePage, auditPage, runtimePage, dataflowPage, assetsPage];
 
 function pageFor(id: string): Page {
   for (const p of PAGES) if (p.id === id) return p;
@@ -1869,6 +2064,14 @@ async function boot(force = false): Promise<void> {
   shell();
 }
 
+// 授权表那一页的取数：换视角时只重取这一份（其余几份不用动）。
+async function loadGrants(): Promise<void> {
+  const res = await getJSON<GrantsView>("/api/grants" + grantsQuery());
+  const gr = contract(res, "授权表");
+  if (cache) cache = { ...cache, grants: gr.v, grantsErr: gr.err };
+  shell();
+}
+
 // 上下文那一页的取数：换人 / 换范围时就重取那一份（其余几份不用动）。
 // 只重取它自己，不是整页重取 —— 这一页的选择是**参数**，不是刷新。
 async function loadContext(): Promise<void> {
@@ -1882,6 +2085,11 @@ window.addEventListener("hashchange", () => {
   // 这一页的「选中谁」在 hash 里：进了这一页就按 URL 重取一次，别的页照旧（取数只在启动 / 刷新）。
   if (pageFor(currentId()).id === "context") {
     void loadContext();
+    return;
+  }
+  // 授权表那一页同理：换视角只重取它自己（那是**参数**，不是刷新）。
+  if (pageFor(currentId()).id === "grants") {
+    void loadGrants();
     return;
   }
   shell();

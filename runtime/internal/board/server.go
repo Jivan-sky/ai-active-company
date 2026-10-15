@@ -73,6 +73,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/approvals", s.handleApprovals)
 	mux.HandleFunc("/api/hot", s.handleHot)
 	mux.HandleFunc("/api/context", s.handleContext)
+	mux.HandleFunc("/api/grants", s.handleGrants)
 	mux.HandleFunc(WritePath, s.handleApprovalsDecide)
 	ui := s.UIFS
 	if ui == nil {

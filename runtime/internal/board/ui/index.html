@@ -163,6 +163,16 @@
     100% { clip-path: inset(0);          transform: translateY(0); }
   }
 
+  /* 面包屑：一行小字，说清「你在哪一页、以谁的视角看」。视角是位置不是状态，
+     所以它必须**一直看得见** —— 否则读的人不知道手里这一份是谁的那一份。 */
+  .crumb {
+    margin: 0 0 2px; font-size: 12.5px; color: var(--ink-3);
+    display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
+  }
+  .crumb .sep { color: var(--line); }
+  .crumb a { color: var(--ink-2); text-decoration: none; border-bottom: 1px solid transparent; }
+  .crumb a:hover { color: var(--accent); border-bottom-color: var(--accent); }
+
   /* ---------- 节：不套卡片，靠一条发丝线分格 ---------- */
   section.sec { margin-top: 30px; padding-top: 24px; border-top: 1px solid var(--line); }
   section.sec > h2 {

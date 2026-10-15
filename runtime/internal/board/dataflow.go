@@ -79,7 +79,7 @@ func (s *Server) handleDataflow(w http.ResponseWriter, r *http.Request) {
 		Gaps:   []string{},
 		Missing: []string{
 			"事件面：谁尝试连了哪、有没有越权尝试 —— SPEC §6 要求「必须记尝试」，审计还没实现",
-			"授权表：grant / TTL / 降级后还剩什么 —— 议题 #32–#35 未落地",
+			"授权表不在这页（它有自己的「授权」页）：这一页只管通道与工具白名单；grant 的**执行语义**（期限到点、降级后还剩什么）仍未落地 —— 议题 #32–#35",
 		},
 	}
 	o, err := org.Load(s.Vault)
