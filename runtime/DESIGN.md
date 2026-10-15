@@ -3341,6 +3341,55 @@ kind+ref，不是谁报上来的那个拼法）。授权那块视图（§7.1.55�
 3. **本机这台任务仍然是停用状态**：这一刀只把事实说出来，**没有**去 `schtasks /change /enable`
    —— 改本机系统状态是危险操作，等一句话。
 
+### 7.1.58 模板编进 exe：拷一个 exe 就能 `init`（2026-10-16，议题 #19）
+
+议题 #19 是 2026-10-05 记下来的：一台**只有 `anc.exe`** 的机器上裸跑 `anc init` / `anc org init`，
+报错退 1 —— 模板只认三处**磁盘**路径（`--templates` / exe 同级 `templates/` / `./templates`），
+三处都没有就死，且报错只说「找不到模板目录」，没说去哪找、怎么补。
+**而 `anc init` 是装机第一步** —— 这一步挂掉，「发一个 exe 出去」这个交付形态就是假的。
+
+**拍板：采纳议题里的 (a) —— 编进 exe，同时磁盘优先。** 两条不冲突，各管一头：
+
+| 来处 | 管什么 | 代价 |
+|---|---|---|
+| 磁盘（`--templates` / exe 同级 / `./templates`） | **现场改模板不用重编** —— 这是当初把模板外置的理由 | 要多同步一个目录 |
+| 内嵌（`go:embed all:templates all:inventory`） | **拷一个 exe 过去就能 `init`**（装机第一步 + §5「重装 ≤ 10 分钟」） | 改模板要重编（约 10 秒） |
+
+**读法收进一层 `templateSource`**（`runtime/main.go`）：调用方只管 `Read(name)`，不再各自写一遍
+`os.ReadFile`；`Kind` 说清「这一份是从哪来的」——`doctor` 与 `init` 的成功输出都回显它
+（`模板：8 个（内嵌（编在 exe 里））`）。**来处本身就是一条要给人看的事实，猜不出来就要说出来。**
+三个方法：`Read`（模板目录里的一份）· `Open`（**兄弟**路径，如 `inventory/assets.md`，它不在模板目录里）·
+`Sub`（模板目录下一棵子树，`org/` 骨架走它）—— `anc org init` 因此不再另写一套路径拼接
+（原来那两处 `filepath.Dir(td)` 的兄弟路径拼接也就地收掉了）。
+
+**内嵌那一份必须在**：`resolveTemplates` 落到内嵌分支后会 `fs.Stat` 一次 `templates/README.md.tmpl`；
+取不到就是**这个 exe 是坏的**，照实报，不装作「只是没找到目录」。
+
+**没做的**（照实列）：zip 仍然带 `templates/` + `inventory/`（磁盘优先是设计，不是过渡）；
+`build.ps1` 不动。
+
+**实测（`-trimpath -ldflags "-s -w"`、`CGO_ENABLED=0`）**：
+
+| 判据 | 结果 |
+|---|---|
+| 干净目录里**只有** `anc.exe`，`anc init out --client …` | ✅ 一次成功：`模板：8 个（内嵌（编在 exe 里））`，写出 8 个文件 |
+| 同上 `anc org init team --id acme --client …` | ✅ 写出 12 个文件（含 `org/` 那一棵整棵） |
+| 同上 `anc assets` | ✅ 打出 `inventory/assets.md` 正文 |
+| 磁盘优先没被顶掉 | ✅ 在仓库里跑 `anc doctor` 仍报 `目录 …\runtime\templates（8 个已登记模板）` |
+| exe 体积代价 | ✅ **+38,424 字节（+38.5 KB）**：9,739,776 → 9,779,200（windows/amd64，同一组编译参数） |
+| 六目标打包 | ✅ exe **8.36–9.33 MB** · zip **3.55–4.01 MB**（`README.md` 那两行旧数 2.38–2.58 / 1.01–1.16 是看板前端入库之前的，同期一并改掉） |
+| 质量门 | ✅ `go test ./... -count=1` **20 包全绿** |
+
+**新增用例**（`runtime/templates_embed_test.go`）：
+
+1. **内嵌那一份必须与磁盘那一份逐字节相同、一份不缺**（`TestEmbeddedTemplatesMatchDisk`）：
+   `filepath.WalkDir("templates")` 逐份比对 —— 两处漂了，等于「拷 exe 装」与「在仓库里装」得到两个不同的东西。
+2. **`tplMap` 每一条内嵌都在**，且 `countTemplates` 数得对（`TestEmbeddedTemplatesCoverEveryTemplate`）：
+   少一条，`init` 会走到一半挂。
+3. 同一份用例顺带钉住 `org/` 整棵骨架那 9 份与 `inventory/assets.md`。
+
+「两台机器装出来不一样」这类漂移，人眼看是看不出来的；第 1 条是这一刀唯一真正的护栏。
+
 ## 8. 与 SPEC 的映射
 
 | 本文 | SPEC |

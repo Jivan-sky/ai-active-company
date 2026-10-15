@@ -8,8 +8,10 @@
 package main
 
 import (
+	"embed"
 	"flag"
 	"fmt"
+	"io/fs"
 	"net"
 	"os"
 	"os/exec"
@@ -19,6 +21,16 @@ import (
 	"strings"
 	"time"
 )
+
+// 模板与资产清单**编进 exe**（议题 #19）：装机第一步就是 `anc init`，而它原来只认
+// 「exe 同级 templates/」与「cwd 上级 templates/」两处 —— 拷一个 exe 过去就挂，
+// 「发一个 exe 出去」这个交付形态当场是假的。
+//
+// 三处磁盘都找不到时才落到这一份：**拷一个 exe 就能 init**。磁盘那三处仍然优先 ——
+// 现场改模板不用重编（那是当初把模板外置的理由；两条不冲突：一条管交付形态，一条管改起来快）。
+//
+//go:embed all:templates all:inventory
+var embeddedRuntime embed.FS
 
 const version = "0.1.0"
 
@@ -259,7 +271,7 @@ func cmdInit(args []string) int {
 		fmt.Fprintf(os.Stderr, "错误：%v\n", err)
 		return 1
 	}
-	td, err := resolveTemplates(*tplDir)
+	tpl, err := resolveTemplates(*tplDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "错误：%v\n", err)
 		return 1
@@ -294,7 +306,7 @@ func cmdInit(args []string) int {
 	}
 	written := 0
 	for _, t := range tplMap {
-		raw, err := os.ReadFile(filepath.Join(td, t.Src))
+		raw, err := tpl.Read(t.Src)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "错误：读模板 %s 失败：%v\n", t.Src, err)
 			return 1
@@ -320,7 +332,7 @@ func cmdInit(args []string) int {
 	fmt.Printf("✅ 已生成客户 ANC 运行层：%s\n\n", abs)
 	fmt.Printf("   客户：%s\n   判层：第 %d 层 · %s（%s）→ 老板要「%s」\n   形态：%s —— %s\n",
 		*client, ti.Code, ti.Name, ti.Size, ti.Want, formKey, formMean)
-	fmt.Printf("   模板：%d 个 → 写出 %d 个文件\n\n", countTemplates(td), written)
+	fmt.Printf("   模板：%d 个（%s）→ 写出 %d 个文件\n\n", countTemplates(tpl), tpl.Kind, written)
 	fmt.Println("   下一步：")
 	fmt.Println("   1) 填 30-delivery/00-判层卡.md —— 没填完不要开跑")
 	fmt.Println("   2) 填 30-delivery/01-计划书.md 第 9 节与「停止条件」，且必须让客户也认可")
@@ -350,10 +362,10 @@ func cmdInit(args []string) int {
 	return 0
 }
 
-func countTemplates(dir string) int {
+func countTemplates(src templateSource) int {
 	n := 0
 	for _, t := range tplMap {
-		if _, err := os.Stat(filepath.Join(dir, t.Src)); err == nil {
+		if _, err := src.Read(t.Src); err == nil {
 			n++
 		}
 	}
@@ -473,8 +485,46 @@ func padRight(s string, width int) string {
 	return s + strings.Repeat(" ", width-w)
 }
 
-// resolveTemplates：优先 --templates，其次 exe 同级 templates/，最后 ./templates。
-func resolveTemplates(explicit string) (string, error) {
+// templateSource 是「模板从哪来」。它只做两件事：读一份模板、说清自己是谁（报错与 doctor 都回显认的那个来处）。
+//
+// 为什么要这一层：模板有两个来处 —— 磁盘（可以现场改）与内嵌（拷一个 exe 就够，议题 #19）。
+// 两个来处的读法不同，但**判据只该有一份**：调用方只管 Read，不再各写一遍 os.ReadFile。
+type templateSource struct {
+	Kind   string // 说给人听的来处
+	Dir    string // 磁盘目录；内嵌时是空串
+	fsys   fs.FS  // 读的根
+	prefix string // 模板在 fsys 里的前缀：磁盘目录 = ""，内嵌 = "templates/"
+}
+
+func (s templateSource) Read(name string) ([]byte, error) {
+	return fs.ReadFile(s.fsys, s.prefix+filepath.ToSlash(name))
+}
+
+// Open 读一份**兄弟**路径上的文件（`inventory/assets.md` 这种，不在模板目录里）：
+// 磁盘上是模板目录的上一级；内嵌时同一条相对路径直接在内嵌树里取（内嵌树以运行层的包目录为根）。
+func (s templateSource) Open(rel string) ([]byte, error) {
+	if s.Dir == "" {
+		return fs.ReadFile(s.fsys, filepath.ToSlash(rel))
+	}
+	return os.ReadFile(filepath.Join(filepath.Dir(s.Dir), filepath.FromSlash(rel)))
+}
+
+// Sub 取模板目录下的一棵子树（`org/` 骨架走它）—— 两个来处都要能取。
+func (s templateSource) Sub(dir string) (templateSource, error) {
+	if s.Dir == "" {
+		return templateSource{Kind: s.Kind, fsys: s.fsys, prefix: s.prefix + dir + "/"}, nil
+	}
+	p := filepath.Join(s.Dir, filepath.FromSlash(dir))
+	if _, err := fs.Stat(os.DirFS(p), "."); err != nil {
+		return templateSource{}, fmt.Errorf("模板里没有 %s/ 这一棵：%v", dir, err)
+	}
+	return templateSource{Kind: "目录 " + p, Dir: p, fsys: os.DirFS(p)}, nil
+}
+
+// resolveTemplates：优先 --templates，其次 exe 同级 templates/，最后 ./templates；
+// **三处都没有就落到内嵌那一份**（编在 exe 里，见 embeddedRuntime）。
+// 磁盘优先是有意的：现场改模板不必重编。
+func resolveTemplates(explicit string) (templateSource, error) {
 	var cands []string
 	if explicit != "" {
 		cands = append(cands, explicit)
@@ -487,13 +537,16 @@ func resolveTemplates(explicit string) (string, error) {
 	for _, c := range cands {
 		abs, _ := filepath.Abs(c)
 		tried = append(tried, abs)
-		if st, err := os.Stat(abs); err == nil && st.IsDir() {
-			if _, err := os.Stat(filepath.Join(abs, "README.md.tmpl")); err == nil {
-				return abs, nil
-			}
+		if st, err := os.Stat(filepath.Join(abs, "README.md.tmpl")); err == nil && !st.IsDir() {
+			return templateSource{Kind: "目录 " + abs, Dir: abs, fsys: os.DirFS(abs)}, nil
 		}
 	}
-	return "", fmt.Errorf("找不到模板目录（需含 README.md.tmpl）。已试：\n  %s", strings.Join(tried, "\n  "))
+	// 内嵌那一份必须在：它是编译期就进二进制的，取不到等于这个 exe 是坏的 —— 照实报，别装作只是「没找到目录」。
+	if _, err := fs.Stat(embeddedRuntime, "templates/README.md.tmpl"); err != nil {
+		return templateSource{}, fmt.Errorf("找不到模板目录（需含 README.md.tmpl），exe 里那一份也读不了：%v。已试：\n  %s",
+			err, strings.Join(tried, "\n  "))
+	}
+	return templateSource{Kind: "内嵌（编在 exe 里）", fsys: embeddedRuntime, prefix: "templates/"}, nil
 }
 
 // ---------- doctor ----------
@@ -519,10 +572,10 @@ func cmdDoctor(args []string) int {
 	var cs []check
 
 	// 模板
-	if td, err := resolveTemplates(*tplDir); err != nil {
+	if tpl, err := resolveTemplates(*tplDir); err != nil {
 		cs = append(cs, check{"模板目录", false, err.Error()})
 	} else {
-		cs = append(cs, check{"模板目录", true, fmt.Sprintf("%s（%d 个已登记模板）", td, countTemplates(td))})
+		cs = append(cs, check{"模板目录", true, fmt.Sprintf("%s（%d 个已登记模板）", tpl.Kind, countTemplates(tpl))})
 	}
 	// git
 	if p, err := exec.LookPath("git"); err != nil {
@@ -612,19 +665,16 @@ func cmdAssets(args []string) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	td, err := resolveTemplates(*tplDir)
+	tpl, err := resolveTemplates(*tplDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "错误：%v\n", err)
 		return 1
 	}
-	base := filepath.Dir(td)
-	for _, p := range []string{filepath.Join(base, "inventory", "assets.md"), filepath.Join(td, "..", "inventory", "assets.md")} {
-		b, err := os.ReadFile(p)
-		if err == nil {
-			fmt.Print(string(b))
-			return 0
-		}
+	b, err := tpl.Open("inventory/assets.md")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "错误：找不到 inventory/assets.md：%v\n", err)
+		return 1
 	}
-	fmt.Fprintln(os.Stderr, "错误：找不到 inventory/assets.md")
-	return 1
+	fmt.Print(string(b))
+	return 0
 }

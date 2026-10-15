@@ -94,7 +94,7 @@ func cmdOrgInit(args []string) int {
 			return 1
 		}
 	}
-	td, err := resolveOrgTemplates(*tplDir)
+	tpl, err := resolveOrgTemplates(*tplDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "错误：%v\n", err)
 		return 1
@@ -109,7 +109,7 @@ func cmdOrgInit(args []string) int {
 	}
 	written := 0
 	write := func(src, dst string, vars map[string]string) error {
-		raw, err := os.ReadFile(filepath.Join(td, src))
+		raw, err := tpl.Read(src)
 		if err != nil {
 			return err
 		}
@@ -292,15 +292,19 @@ func displayName(name string) string {
 	return string(r)
 }
 
-// resolveOrgTemplates 找 org/ 骨架模板目录。
-func resolveOrgTemplates(explicit string) (string, error) {
+// resolveOrgTemplates 找 org/ 骨架模板（`templates/org/`）—— 磁盘与内嵌两个来处都取得到。
+func resolveOrgTemplates(explicit string) (templateSource, error) {
 	base, err := resolveTemplates(explicit)
 	if err != nil {
-		return "", err
+		return templateSource{}, err
 	}
-	dir := filepath.Join(base, "org")
-	if _, err := os.Stat(filepath.Join(dir, "company.md.tmpl")); err != nil {
-		return "", fmt.Errorf("模板目录里缺 org/company.md.tmpl：%s", dir)
+	sub, err := base.Sub("org")
+	if err != nil {
+		return templateSource{}, fmt.Errorf("模板里缺 org/ 这一棵：%v", err)
 	}
-	return dir, nil
+	// 认得出这一棵要靠里头那几份真在（缺了就是模板不全，报出来别装作能用）。
+	if _, err := sub.Read("company.md.tmpl"); err != nil {
+		return templateSource{}, fmt.Errorf("模板里缺 org/company.md.tmpl：%v", err)
+	}
+	return sub, nil
 }

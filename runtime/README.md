@@ -6,7 +6,8 @@
 ## 技术选型交代
 
 - **语言：Go 单 exe**。理由：装配器要在客户的 Mac mini / Windows / Linux 上跑，同一份源码三平台；交付物不许自带运行时（判据：跨平台 + 一次性起进程 → Go）。
-- **代价**：现场改**逻辑**要重编（约 10 秒）。所以**模板全部外置成纯文件**（`templates/`），现场改模板不用重编译。
+- **代价**：现场改**逻辑**要重编（约 10 秒）。所以**模板全部外置成纯文件**（`templates/`），现场改模板不用重编译；
+  同一份模板**又用 `go:embed` 编进 exe**（议题 #19）——三处磁盘都找不到时落到内嵌那一份，代价是 exe 大 **38.5 KB**（实测，见 `DESIGN.md` §7.1.58）。
 - 只用标准库，无第三方依赖 → 交叉编译零障碍。
 
 ## 用法
@@ -817,7 +818,7 @@ pwsh -File build.ps1              # 六个目标（win/darwin/linux × amd64/arm
 pwsh -File build.ps1 -Only local  # 只编本机 windows/amd64
 ```
 
-产出 `dist/anc_<version>_<os>_<arch>.zip`，每个 zip **自包含**（exe + `templates/` + `inventory/` + `README.md`）。实测体积：单平台 exe **2.38–2.58 MB**、zip **1.01–1.16 MB**（`CGO_ENABLED=0` + `-trimpath -ldflags "-s -w"`，纯静态无 libc 依赖）。exe 优先从**自身同级** `templates/` 找模板，所以 zip 解到哪都能直接跑。
+产出 `dist/anc_<version>_<os>_<arch>.zip`，每个 zip **自包含**（exe + `templates/` + `inventory/` + `README.md`）。实测体积（2026-10-16，含内嵌模板）：单平台 exe **8.36–9.33 MB**、zip **3.55–4.01 MB**（`CGO_ENABLED=0` + `-trimpath -ldflags "-s -w"`，纯静态无 libc 依赖）。exe 找模板的次序是 `--templates` → **自身同级** `templates/` → `./templates` → **编在 exe 里那一份**：所以 zip 解到哪都能直接跑，而**只有一个 exe** 也能跑（议题 #19）。
 
 ## 缺省目标平台（对应客户形态）
 
@@ -879,10 +880,10 @@ pwsh -File build.ps1 -Only local  # 只编本机 windows/amd64
 | `internal/org/grants.go` | 授权表（`grants/**/*.md`，一个 grant 一个文件）的扫描与跨表校验 |
 | `internal/render/` | 纯函数渲染：persona 七段叠加 + lint、config 全量生成 + 往返回读、凭据键记账（`Plan.SecretKeys` / `FeishuSecretKey`，装载前体检吃它）+ `${ENV}` 引用回读（与账交叉校验用） |
 | `internal/apply/` | 装载的纯逻辑：secrets.env 解析 / 键名合法性（`LegalKey`）/ 缺键判定 + 凭据落点注入（Windows：上游装载体托管区；Linux：systemd drop-in。都幂等、带指纹） |
-| `templates/org/` | vault 骨架模板（纯文件，现场可直接改） |
+| `templates/org/` | vault 骨架模板（纯文件，现场可直接改；同时 `go:embed` 编进 exe） |
 | `testdata/orgs/` | 校验正/负例 vault（one / six / disabled / broken-validate / broken-section） |
 | `testdata/golden/` | 结构快照（只锁语义） |
-| `templates/` | 客户库模板，**纯文件，现场可直接改** |
+| `templates/` | 客户库模板，**纯文件，现场可直接改**；磁盘三处都没有时用 exe 里内嵌的那一份（议题 #19） |
 | `inventory/assets.md` | 已有资产台账 |
 | `build.ps1` | 本机编译 + 交叉编译 + 打包 |
 | `dist/` | 产出（见 `build.ps1`） |
