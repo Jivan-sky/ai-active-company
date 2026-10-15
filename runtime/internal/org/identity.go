@@ -73,6 +73,17 @@ func (o *Org) Identity(ref string) (Identity, bool) {
 	return Identity{}, false
 }
 
+// SameSubject 是「这是同一个人吗」那把尺子：比的是**编号**（kind + ref），不是谁报上来的那个拼法。
+//
+// 三处问的是同一件事，就只留这一个定义：热层那条待办的 `to` / `by` 是不是派给这个主体、
+// 一条授权是不是指着这个主体、接入面认出来的主体是不是这一个 —— 各写一遍比较，迟早出现
+// 「看板说他有权、读出口说他没权」那种对不上号。
+//
+// 编号为空的算「不是」：没有编号就没有身份可比。**解不出来**这件事由调用方报缺，不在这里编一个。
+func SameSubject(a, b Identity) bool {
+	return strings.TrimSpace(a.Ref) != "" && a.Kind == b.Kind && a.Ref == b.Ref
+}
+
 // ---- 平台那三样：open_id / app_id / project 名 → 主体 ----
 //
 // 上面那个 Identity(ref) 认的是**编号**（成员名 / agent slug）。但平台那一侧递过来的

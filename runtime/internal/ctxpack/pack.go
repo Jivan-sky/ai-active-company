@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -291,18 +292,22 @@ func Assemble(o *org.Org, vault, who, onBehalf, ask string, now time.Time, tasks
 	out.Projects = projectRows(o, chosen)
 	// 「派给我的待办」（反向下发的那一步）。同目录 / 报缺那条纪律：只在要「全部」时给 ——
 	// 单域问就是「只要那一块业务的那一行」，不把与那一块无关的东西塞进去。
-	// 判据只有一条：热层的 to / by 是不是**解出来的主体编号**（署名不参与这一块）。
+	// 判据只有一条：热层的 to / by **解出来的主体编号**是不是这个人（署名不参与这一块）。
+	var pick taskPick
 	if ask == "" {
-		out.Todo, out.Doing = taskRows(subj.Ref, tasks)
+		pick = taskRows(o, subj, tasks)
+		out.Todo, out.Doing = pick.Todo, pick.Doing
 	}
 	// 「我被允许做什么」—— bot 侧那个**按人过滤**的视图（议题 #68）。
 	// 与 Todo / Doing 同一条规矩：只在要「全部」时给 —— 授权按**主体**算（客体可能是跨域的通道），
 	// 切不出「这一块业务的那几条」，硬塞进单域问里就是编。
 	if ask == "" {
 		out.Grants = grantRows(o, subj)
-	} // 报缺只在要「全部」时给：要单独一域的人不该被一段通用说明淹掉。
+	}
+	// 报缺（gaps）同样只在要「全部」时给：要单独一域的人不该被一段通用说明淹掉 ——
+	// 他要的是那一块业务的那一行，不是「这份上下文还答不了什么」那张清单。
 	if ask == "" {
-		out.Gaps = contextGaps(out, tasks)
+		out.Gaps = contextGaps(out, tasks, pick)
 	}
 	return out, false
 }
@@ -379,13 +384,39 @@ func projectRows(o *org.Org, chosen []renderpkg.DomainRow) []ProjectOut {
 	return out
 }
 
-// taskRows 把热层那一摞当前值挑成「派给我的」与「我在做的」两摞。
+// taskPick 是 taskRows 的产物：两摞当前值 + **解不出主体**的那些写法。
 //
-// 两条口径：
-//   - 匹配的是**解出来的主体编号**（subj.Ref），不是请求里报上来的那个拼法 —— 同身份那条纪律。
+// 解不出的分两摞记，因为后果不一样：`to` 解不出 = 这条**派不到任何人手里**（谁都不认领，也不报错）；
+// `by` 解不出 = 这条不会出现在任何人的「我在做的」里（谁在做这件事，这一层答不了）。
+type taskPick struct {
+	Todo      []TaskOut
+	Doing     []TaskOut
+	UnknownTo []string
+	UnknownBy []string
+}
+
+// taskRows 把热层那一摞当前值挑成「派给我的」与「我在做的」两摞，顺带把解不出的写法挑出来。
+//
+// 三条口径：
+//   - 两边走**同一把尺子**（org.IdentityForRef + org.SameSubject）：热层里写 `alice` 还是
+//     `member:alice` 是同一件事；写 `Alice Wang`（显示名）或 `role:manager`（岗位）**谁都不是** ——
+//     岗位是「一类人」不是一个编号身份（与授权那条口径同一支，见 §7.1.55）。
+//   - 解不出来的**不静默**：收进 UnknownTo / UnknownBy，由 contextGaps 报缺。
+//     写作是人的事；写错了却一声不吭，那几条就永远落不到任何人手里 —— 正是这个系统最怕的失真。
 //   - 状态一条都不筛：热层里还留着一条 done，说明它还没清走（达标是「先落库、再清热层」），
 //     那不是这一层该替人做的判断。
-func taskRows(ref string, tasks TasksIn) (todo, doing []TaskOut) {
+func taskRows(o *org.Org, subj org.Identity, tasks TasksIn) taskPick {
+	var pok taskPick
+	// 一格三种结果：不是写给我的 / 是写给我的 / 这写法解不出人。
+	hit := func(raw string) (mine, unresolvable bool) {
+		if raw == "" {
+			return false, false // 没写这一格 = 没这一手，不是写错
+		}
+		if idn, ok := o.IdentityForRef(raw); ok {
+			return org.SameSubject(idn, subj), false
+		}
+		return false, true
+	}
 	for _, st := range tasks.Rows {
 		if st.ID == "" {
 			continue
@@ -394,18 +425,64 @@ func taskRows(ref string, tasks TasksIn) (todo, doing []TaskOut) {
 			ID: st.ID, Title: st.Title, Status: st.Status, By: st.By, To: st.To,
 			Domain: st.Domain, Project: st.Project, Note: st.Note, AsOf: st.AsOf,
 		}
-		if st.To == ref {
-			todo = append(todo, row)
+		switch mine, bad := hit(st.To); {
+		case mine:
+			pok.Todo = append(pok.Todo, row)
+		case bad:
+			pok.UnknownTo = append(pok.UnknownTo, st.To)
 		}
-		if st.By == ref {
-			doing = append(doing, row)
+		switch mine, bad := hit(st.By); {
+		case mine:
+			pok.Doing = append(pok.Doing, row)
+		case bad:
+			pok.UnknownBy = append(pok.UnknownBy, st.By)
 		}
 	}
 	// 热层的列举走 SCAN，顺序不保证：这里定死一个（编号升序）——
-	// 三个出口要「除回答时刻外逐字段相同」，就不能让顺序飘。
-	sort.Slice(todo, func(i, j int) bool { return todo[i].ID < todo[j].ID })
-	sort.Slice(doing, func(i, j int) bool { return doing[i].ID < doing[j].ID })
-	return todo, doing
+	// 三个出口要「除回答时刻外逐字段相同」，就不能让顺序飘。解不出的那两摞也定死（去重后字典序）。
+	pok.UnknownTo = dedupeSorted(pok.UnknownTo)
+	pok.UnknownBy = dedupeSorted(pok.UnknownBy)
+	sort.Slice(pok.Todo, func(i, j int) bool { return pok.Todo[i].ID < pok.Todo[j].ID })
+	sort.Slice(pok.Doing, func(i, j int) bool { return pok.Doing[i].ID < pok.Doing[j].ID })
+	return pok
+}
+
+// dedupeSorted 去重 + 字典序：报缺里列的是**写法**，同一种写法写错三条只该说一次；
+// 顺序定死，三个出口那句报缺才可能逐字相同。
+func dedupeSorted(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(in))
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// capList 把报缺里要列的写法压成一句人话：先过 SafeToken（外部文本不许原样回显 —— 同 SafeToken 那条口径），
+// 最多列 5 种，多的收成「……等 N 种」。报缺是给人一眼看懂的，不是把整摞倒出来。
+func capList(in []string) string {
+	const most = 5
+	shown, tail := in, ""
+	if len(in) > most {
+		shown = in[:most]
+		tail = "……等 " + strconv.Itoa(len(in)) + " 种"
+	}
+	out := make([]string, 0, len(shown)+1)
+	for _, s := range shown {
+		out = append(out, "`"+SafeToken(s)+"`")
+	}
+	if tail != "" {
+		out = append(out, tail)
+	}
+	return strings.Join(out, "、")
 }
 
 // grantRows 组「我被允许做什么」那一块：**只出与这个主体相关的行**。
@@ -443,12 +520,23 @@ func grantRows(o *org.Org, subj org.Identity) *GrantsOut {
 
 // contextGaps 明说「这份上下文答不了什么」。**只列没有真相源的那几样** ——
 // 不编、也不假装完整：读的人据此知道该去问谁，而不是以为这就是全部。
-func contextGaps(out Out, tasks TasksIn) []string {
+func contextGaps(out Out, tasks TasksIn, pick taskPick) []string {
 	var g []string
 	// 热层没接上 = 这一段答不了。**必须与「没人派给你」分开说** ——
 	// 否则读的人会拿一份「看不到」当成「没有」，那正是假绿。
 	if !tasks.Wired {
 		g = append(g, "派给我的待办：热层没接上 —— 这一段答不了，**不是**「没人派给你」")
+	}
+	// 热层里解不出主体的写法**必须说出来**：写 `Alice Wang`（显示名）或 `role:manager`（岗位）的那几条
+	// 谁都不认领、也不报错 —— 那正是「看着绿、其实丢了」的那一类。热层没接上时不说（上一条已经交代了这一整段）。
+	if tasks.Wired && len(pick.UnknownTo) > 0 {
+		g = append(g, "派给我的待办：热层里有 "+strconv.Itoa(len(pick.UnknownTo))+" 种 `to` 写法解不出主体（"+
+			capList(pick.UnknownTo)+"）—— 那几条**落不到任何人手里**。`to` 认的是编号（成员名 / 业务 agent 的 slug）；"+
+			"写给外部对象的不算错，但它也不会出现在任何人的待办里")
+	}
+	if tasks.Wired && len(pick.UnknownBy) > 0 {
+		g = append(g, "我在做的：热层里有 "+strconv.Itoa(len(pick.UnknownBy))+" 种 `by` 写法解不出主体（"+
+			capList(pick.UnknownBy)+"）—— 那几条不会出现在任何人的「我在做的」里（谁在做这件事，这一层答不了）")
 	}
 	if len(out.Skills) == 0 {
 		g = append(g, "技能：这个岗位在 roles/<role> 里没声明 skills（不是「没有技能」，是「没登记」）")

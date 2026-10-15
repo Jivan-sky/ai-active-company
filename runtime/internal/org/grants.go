@@ -294,8 +294,7 @@ func GrantHitsSubject(o *Org, g Grant, idn Identity) bool {
 		return false
 	}
 	for _, s := range GrantSlots(g) {
-		other, ok := o.IdentityForRef(s.Raw)
-		if ok && other.Kind == idn.Kind && other.Ref == idn.Ref {
+		if other, ok := o.IdentityForRef(s.Raw); ok && SameSubject(other, idn) {
 			return true
 		}
 	}
