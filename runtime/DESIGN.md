@@ -3590,6 +3590,35 @@ limit/顺序、MCP 冲突与未知身份）；`npm run check` 通过；真 Redis
 写出 `timeline/2026-10.receptionbot.jsonl`，热层归零；重复 settle 回「已在 timeline」且只有一行；
 `/api/timeline` 报 `total=3 / green=3`。
 
+### 7.1.67 看板归档：写口从一处变两处，领域入口仍然只有一份（2026-10-18）
+
+**问题**：`settle` 之前只有 CLI 与 MCP 两条路。看板是人操作的主界面，却看不见「这条做完的事
+怎么落库」—— 一个 agent 回执 `done` 之后，还得有人去终端敲命令，资产沉淀就断在人机交界处。
+
+**落点**：
+- 结账核心抽成 `internal/tasksettle`：CLI（`anc task settle`）、MCP（`anc_task action=settle`）、
+  看板（`POST /api/tasks/settle`）**三个前端调同一个 `Settle`**。规则只写一处：
+  先落 timeline、再清热层；幂等；queued / running 默认拒结。
+- 看板写口从「唯一一处」变成「两处」：审批信号 + 任务归档。两者都不是新实现 ——
+  各自与 CLI 共用同一个领域入口，只是多接了一根 HTTP 线。
+- `POST /api/tasks/settle` 与审批同一套管道限制：只收 `POST` + `application/json`、64KB、
+  **不校「点的人是不是该归档的人」**（`by` 原样留痕，判断交给 agent）。
+  错误分档：`400`（缺 `by` / `by` 写不成文件名）、`409`（`ErrOpen` 还在跑 / 热层与时间线都没有这条）、
+  `503`（热层没接上 / 落库失败）。
+- 看板只在**终态**条目上开归档口；queued / running 的抽屉里写清「为什么不开」。
+  `/api/hot` 的 `settle_path` 由服务端给，前端不另抄路由。
+- 身份：看板没有免登，`by` 由页面出（与审批共用本机记住的「谁在点」）。归档时**中文显示名
+  尽量对到已登记成员的 slug** —— `timeline` 的作者要能落成 ASCII 文件名；认不出就原样用，
+  由 `timeline` 如实报「写不成文件名」，不替人编身份。
+
+**没做什么**：没有让看板改任务状态（ack 仍归执行者）；没有把归档做成自动的 ——
+人点一下，才是「这一条确实结束了」的那一刀。
+
+**实测**：`go test ./...` 全绿（`internal/tasksettle` 单测 + 看板端点：GET → 405、匿名 → 400、
+queued / running → 409、重复 → `already=true` 且不追加、中文显示名 → slug）；`npm run check` 通过。
+真 Redis + 真 HTTP：`done` 任务从看板归档，`by=陈知行` 落成 `cs-owner`，热层归零，
+`/api/timeline` 报 `total=1 / green=1`；重复归档只回「早已沉淀」。
+
 ## 8. 与 SPEC 的映射
 
 | 本文 | SPEC |

@@ -20,6 +20,7 @@ import (
 	"anc/internal/hot"
 	"anc/internal/mcp"
 	"anc/internal/org"
+	"anc/internal/tasksettle"
 )
 
 const envelopeUsage = `anc envelope —— 接入面：递进来（信封）+ 要出去（读出口）
@@ -549,7 +550,7 @@ func (g *envelopeIngress) taskOp(args map[string]any) (string, bool) {
 			}
 			by = a.Slug
 		}
-		res, err := settleTask(g.Tasks, g.Vault, id, taskSettleOpts{
+		res, err := tasksettle.Settle(g.Tasks, g.Vault, id, tasksettle.Opts{
 			By: by, Title: strArg(args, "title"), Status: strArg(args, "status"),
 			Kind: strArg(args, "kind"), Note: strArg(args, "note"), Refs: listArg(args, "refs"),
 		})

@@ -17,6 +17,7 @@ package timeline
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -194,6 +195,10 @@ func Load(vault string) (Doc, error) {
 	return doc, nil
 }
 
+// ErrAuthor：by 不是空，但压成文件名后什么都不剩（例如纯中文名）。
+// 单独一个哨兵：看板要把它判成「填错了」，而不是「服务坏了」。
+var ErrAuthor = errors.New("by 写不成文件名")
+
 // Enter 一句话说明为什么会返回 error：只有「写不进去」才报错。
 //
 // Append 追加一条。文件 = `<YYYY-MM>.<author>.jsonl` —— **按作者分片**，
@@ -207,9 +212,13 @@ func Append(vault string, e Entry) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("at 必须是 RFC3339（例如 2026-10-08T02:41:00+08:00）")
 	}
-	author := safeName(e.By)
-	if author == "" {
+	rawBy := strings.TrimSpace(e.By)
+	if rawBy == "" {
 		return "", fmt.Errorf("by 不能为空 —— 谁记的就署谁，这是留存记录的第一性要求")
+	}
+	author := safeName(rawBy)
+	if author == "" {
+		return "", fmt.Errorf("%w（只用字母、数字、._- 与空格）：%q —— 用成员 slug 或英文名", ErrAuthor, rawBy)
 	}
 	dir := filepath.Join(vault, DirName)
 	if err := os.MkdirAll(dir, 0o755); err != nil {

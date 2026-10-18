@@ -6,7 +6,8 @@
 // 五条纪律：
 //   1. 真相源里的字一律走 textContent，绝不 innerHTML —— 看板不许成为注入点；
 //   2. 不猜、不补：哪块没有数据源就写清楚「还没接入」，不编假数据把界面填满；
-//   3. 几乎只读：唯一的写口是「待批」页的点头（一次留痕，不动真相源）—— 其余全是读；
+//   3. 几乎只读：写只有两处 ——「待批」页的点头（留痕，不动真相源）与热层终态条目的归档
+//      （落 timeline、再清热层）—— 其余全是读；
 //   4. 一页只回答一个问题 —— 那句问题写在页头（Page.question），写不出来就该先想清楚再开页；
 //   5. 数据源没接通的页面，导航上直接标「未接入」，不靠人点进去才发现；
 //   6. 动效分层：换页才进一次场、只有「在动 / 要人管」的状态灯呼吸，数据区一律静 ——
@@ -332,14 +333,19 @@ type DecideReply = {
 // 与 `/api/approvals` 是同一份底层数据、两个问题：那是**队列**（等谁点头），这是**这一层本身**。
 // wired=false 与 total=0 是两件事，所以两个字段都在（同 approvals 的口径）。
 type HotEntryView = {
-  id: string; status: string; title: string; by?: string; to?: string;
+  id: string; status: string; title: string; by?: string; from?: string; to?: string;
   as_of?: string; age_secs?: number; stale: boolean;
   session?: string; intent?: string; version?: number;
 };
 type HotView = {
   schema: string; wired: boolean; why?: string; error?: string;
   ttl_secs: number; stale_after_secs: number;
-  total: number; stale: number; entries: HotEntryView[]; note: string;
+  total: number; stale: number; entries: HotEntryView[];
+  settle_path: string; note: string;
+};
+type SettleReply = {
+  ok?: boolean; id?: string; by?: string; status?: string;
+  already?: boolean; timeline?: string; note?: string;
 };
 
 // 工作上下文（`/api/context`，schema = anc.context/v1）—— 「一个 agent 的工作上下文是什么」。
@@ -1677,6 +1683,80 @@ function renderAssets(d: Data): Kid[] {
   return out;
 }
 
+// 归档 —— 热层里唯一能写的一刀：终态条目落 timeline，再清走热层。
+// 与审批同一条纪律：谁在点由页面出，后端原样留痕、不校验。
+// 还在 queued / running 的不开这个口：结账等于把没做完的事从看板抹掉（后端也这么判）。
+function archivable(status: string): boolean {
+  const s = status.trim().toLowerCase();
+  return s !== "queued" && s !== "running";
+}
+
+function archiveSection(v: HotView, e: HotEntryView): HTMLElement {
+  if (!archivable(e.status)) {
+    return card("归档", "还在进行中，不落库", [
+      ["为什么", cannot("queued / running 还没结束 —— 要终止先回执，用 status=cancelled 把决定留在记录里")],
+    ]);
+  }
+  if ((v.settle_path ?? "") === "") {
+    return card("归档", "服务没给写口地址", [
+      ["为什么", cannot("settle_path 是空的 —— 刷新看看，或看服务端日志")],
+    ]);
+  }
+  const who = el("input", {
+    class: "by", type: "text",
+    placeholder: "谁在归档（会原样写进 timeline）", value: byWho,
+  });
+  const note = el("input", { class: "why", type: "text", placeholder: "归档说明（可空）" });
+  const hint = el("p", { class: "empty" }, "归档 = 先落 timeline、再清走热层；同一条不会重复写。");
+  const btn = el("button", { class: "act approve", type: "button" }, "归档到时间线");
+  who.addEventListener("input", () => {
+    byWho = (who as HTMLInputElement).value;
+    try {
+      localStorage.setItem(BY_KEY, byWho);
+    } catch {
+      // 记不住就算了：留痕照写，只是下次要重打。
+    }
+  });
+  btn.addEventListener("click", () => {
+    void settleHot(v, e, who as HTMLInputElement, note as HTMLInputElement, btn as HTMLButtonElement, hint);
+  });
+  const box = card("归档", "先落 timeline、再清热层", []);
+  box.append(
+    el("p", { class: "empty" }, "这条已经是终态。归档后人能在「时间线」里按 case 找到它。"),
+    el("div", { class: "field" }, who),
+    el("div", { class: "field" }, note),
+    el("div", { class: "acts" }, btn),
+    hint);
+  return box;
+}
+
+// 点一次归档：成功就整页重取（热层真的少了一条）。
+async function settleHot(
+  v: HotView, e: HotEntryView,
+  who: HTMLInputElement, note: HTMLInputElement, btn: HTMLButtonElement, hint: HTMLElement,
+): Promise<void> {
+  const by = who.value.trim();
+  if (by === "") {
+    hint.textContent = "先填「谁在归档」：匿名归档等于没归档（后端也这么拒）。";
+    return;
+  }
+  btn.setAttribute("disabled", "disabled");
+  hint.textContent = "正在落库…";
+  const res = await postJSON<SettleReply & { error?: string; hint?: string }>(v.settle_path, {
+    id: e.id, by, note: note.value,
+  });
+  if (res.status === 200 && res.body && res.body.ok) {
+    closeDrawer();
+    showToast((res.body.already ? "早已归档：" : "已归档：") + e.id);
+    await boot(true);
+    return;
+  }
+  btn.removeAttribute("disabled");
+  const msg = res.body?.error ?? res.err;
+  const h = res.body?.hint ?? "";
+  hint.textContent = (msg === "" ? "HTTP " + res.status : msg) + (h === "" ? "" : "（" + h + "）");
+}
+
 // 热层 —— 「还在发生的事」本身。与「待批」同一份底层数据、两个问题：
 // 那是队列（等谁点头），这是这一层（几条、几条不新鲜、多久自己走）。
 function renderHot(d: Data): Kid[] {
@@ -1693,7 +1773,7 @@ function renderHot(d: Data): Kid[] {
   }
   const out: Kid[] = [];
   if ((v.error ?? "") !== "") out.push(banner("bad", "热层读不动", [el("span", {}, dash(v.error))]));
-  out.push(section("这一层现在什么情况", "阈值由服务端给，前端只翻成人话；不认领、不清走、不改任何一条",
+  out.push(section("这一层现在什么情况", "阈值由服务端给，前端只翻成人话；归档那一刀只开在终态条目上",
     el("div", { class: "figs" },
       statCard(String(v.total), "条目", "热层总数"),
       statCard(String(v.stale), "不新鲜", "只是标记，不拦不删"),
@@ -1714,10 +1794,14 @@ function renderHot(d: Data): Kid[] {
         card("这条现在在哪", "热层是缓存，不是永久资产", [
           ["id", el("span", { class: "mono" }, e.id)],
           ["状态", dash(e.status)],
-          ["谁 → 交给谁", dash(e.by) + " → " + dash(e.to)],
+          ["派单 → 执行", dash(e.from) + " → " + dash(e.by)],
+          ["下一手", dash(e.to)],
+          ["会话 / 意图", dash(e.session) + " · " + dash(e.intent)],
+          ["版本", "v" + String(e.version ?? "—")],
           ["多久没动", age],
           ["新鲜度", e.stale ? "不新鲜（只是标记，不拦不删）" : "新鲜"],
         ]),
+        archiveSection(v, e),
       ],
     });
     cardEl.addEventListener("click", open);
@@ -1726,8 +1810,9 @@ function renderHot(d: Data): Kid[] {
   });
   out.push(section("住着哪些事", "最多回显 " + v.entries.length + " 条；总数照报，不因为截断装作只有这些",
     cards.length === 0 ? emptyNote("热层现在是空的 —— 没有还在发生的事。") : el("div", { class: "grid" }, ...cards)));
-  out.push(section("这一页不做什么", "说清边界比多画几张卡有用",
-    emptyNote("不认领、不清走、不改任何一条；过期只是标记。要处理，去「待批」或「时间线」。")));
+  out.push(section("这一页能做什么、不做什么", "说清边界比多画几张卡有用",
+    emptyNote("能在**终态**条目上归档（先落 timeline、再清走热层）；不认领、不改状态。"
+      + "还在跑的条目要终止，先让执行的人回执；过期只是标记，不拦不删。")));
   return out;
 }
 
@@ -3120,8 +3205,8 @@ function rail(page: Page): HTMLElement {
 function footer(): HTMLElement {
   return el("footer", {},
     el("div", {}, el("strong", {}, "几乎只读"),
-      "：数据是真相源（vault）的实时投影，点「刷新」重取；全站唯一能写的一处是「待批」页的点头，",
-      "它只留痕（timeline + audit），不动真相源。"),
+      "：数据是真相源（vault）的实时投影，点「刷新」重取；写只有两处 ——「待批」页的点头",
+      "（留痕：timeline + audit，不动真相源）与热层终态条目的归档（先落 timeline、再清热层）。"),
     el("div", {}, el("strong", {}, "校验发现"), " 与 ", el("span", { class: "mono" }, "anc org check"),
       " 同源：红档拦住落盘，非红档只回显；完整清单在「总览」。"),
     el("div", {}, el("strong", {}, "分页口径"),
@@ -4047,8 +4132,8 @@ function pageHead(page: Page): HTMLElement {
 
 function pageFooter(): HTMLElement {
   return el("footer", { class: "note" },
-    el("strong", {}, "几乎只读"), "：数据是真相源（vault）的实时投影，点刷新重取；全站唯一能写的一处是「待批」页的点头，",
-    "它只留痕（timeline + audit），不动真相源。",
+    el("strong", {}, "几乎只读"), "：数据是真相源（vault）的实时投影，点刷新重取；写只有两处 ——",
+    "「待批」页的点头（留痕：timeline + audit，不动真相源）与热层终态条目的归档（落 timeline、再清热层）。",
     el("br"),
     el("strong", {}, "校验发现"), " 与 ", el("span", { class: "mono" }, "anc org check"), " 同源；完整清单在「总览」和「审计」。");
 }
@@ -4122,7 +4207,7 @@ function shell(): void {
         el("span", { class: "sb-item" }, "schema ", el("b", {}, d?.board ? d.board.schema : "—")),
         el("span", { class: "sb-item" }, d?.board ? "生成 " + localTime(d.board.generated_at) : "等待投影"),
         el("span", { class: "sb-grow" }),
-        el("span", { class: "sb-item" }, "几乎只读 · 唯一写口在待批"),
+        el("span", { class: "sb-item" }, "几乎只读 · 写口：待批 / 归档"),
         el("span", { class: "sb-item" }, "Ctrl K"))));
   try {
     if (localStorage.getItem("anc.rail.min") === "1") app.classList.add("rail-min");

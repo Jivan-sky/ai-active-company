@@ -16,9 +16,9 @@ import (
 //
 // **默认只读**，这是设计约束，不是「暂时还没写」：
 //   - 只有 GET / HEAD，别的方法一律 405 —— 没有写入口，就不存在越权写入口；
-//   - **唯一例外**是审批信号（`POST /api/approvals/decide`，见 approvals.go）：
-//     它不是第二条写入口，而是同一个变更管道的第三个前端（SPEC §7）——
-//     与 CLI 走同一个入口、同一份留痕。除此之外没有任何写路由；
+//   - **只有两个例外**，两个都是「与 CLI 共用同一个领域入口」，不是各写一套：
+//     审批信号（`POST /api/approvals/decide`，见 approvals.go）与
+//     任务归档（`POST /api/tasks/settle`，见 tasks.go）。除此之外没有任何写路由；
 //   - 每次请求现读 vault（不缓存）：改完真相源刷新即见。看板的价值在「现在是什么样」，
 //     缓存的看板会让人拿着过期信息做判断；
 //   - 校验红档不隐藏：`/api/issues` 如实回显，前端把它摆最上面。
@@ -46,6 +46,10 @@ type Server struct {
 	// Agents 是同一个热层的**心跳**视角（`/api/agents`）。
 	// nil = 没接上：视图如实回 wired=false，不拿「全是离线」冒充真实状态。
 	Agents AgentLayer
+
+	// Tasks 是热层的**结账**视角（`POST /api/tasks/settle`）。
+	// nil = 没接上：归档口拒绝服务 —— 没有热层就读不到当前值、也清不走。
+	Tasks TaskSettler
 
 	// UIFS 是前端静态资源的**根**。nil = 用内嵌的那份（默认）。
 	//
@@ -80,6 +84,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/context", s.handleContext)
 	mux.HandleFunc("/api/grants", s.handleGrants)
 	mux.HandleFunc(WritePath, s.handleApprovalsDecide)
+	mux.HandleFunc(SettlePath, s.handleTaskSettle)
 	ui := s.UIFS
 	if ui == nil {
 		ui = UIFS()
@@ -90,17 +95,17 @@ func (s *Server) Handler() http.Handler {
 
 // readOnly 只放行读方法。405 带上 Allow 头 —— 让调用方知道该用什么方法，而不是自己去猜。
 //
-// 唯一的例外是审批信号那条（见 approvals.go 的 WritePath）：它不是「把看板改成可写」，
-// 而是那一条本来就属于变更管道 —— CLI 与它走的是同一个入口。
+// 例外只有两条：审批信号（WritePath）与任务归档（SettlePath）。它们不是「把看板改成可写」，
+// 而是这两件事本来就属于变更管道 —— 各自与 CLI 走同一个领域入口。
 //
 // 方法在**这一层**判，不留给处理函数：否则 `GET` 那个写口会落到处理函数上，
 // 报出一个「Content-Type 不对」的假原因（真原因是动词不对）—— 2026-10-10 实测踩到。
 func readOnly(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == WritePath {
+		if r.URL.Path == WritePath || r.URL.Path == SettlePath {
 			if r.Method != http.MethodPost {
 				w.Header().Set("Allow", "POST")
-				http.Error(w, "这个写口只认 POST："+WritePath, http.StatusMethodNotAllowed)
+				http.Error(w, "这个写口只认 POST："+r.URL.Path, http.StatusMethodNotAllowed)
 				return
 			}
 			next.ServeHTTP(w, r)
@@ -108,7 +113,7 @@ func readOnly(next http.Handler) http.Handler {
 		}
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			w.Header().Set("Allow", "GET, HEAD")
-			http.Error(w, "看板只读：只有 GET / HEAD（写只有一处 "+WritePath+"，且只收 POST + application/json）", http.StatusMethodNotAllowed)
+			http.Error(w, "看板只读：只有 GET / HEAD（写只有两处 "+WritePath+" 与 "+SettlePath+"，且只收 POST + application/json）", http.StatusMethodNotAllowed)
 			return
 		}
 		next.ServeHTTP(w, r)

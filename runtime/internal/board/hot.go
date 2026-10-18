@@ -60,7 +60,9 @@ type HotView struct {
 	Total          int            `json:"total"`
 	Stale          int            `json:"stale"`
 	Entries        []HotEntryView `json:"entries"`
-	Note           string         `json:"note"`
+	// SettlePath 是「归档往哪发」—— 与审批同一口径：由服务端给，前端不另写一份常量。
+	SettlePath string `json:"settle_path"`
+	Note       string `json:"note"`
 }
 
 // hotRow 是排序用的一行：视图 + 「这条有没有写时间」。
@@ -73,9 +75,10 @@ type hotRow struct {
 func (s *Server) handleHot(w http.ResponseWriter, r *http.Request) {
 	view := HotView{
 		Schema: HotSchema, Entries: []HotEntryView{},
+		SettlePath:     SettlePath,
 		StaleAfterSecs: int64(hot.DefaultStale / time.Second),
 		Note: "热层是「还在发生的事」待的地方：带保鲜期，到期自己走 —— 所以它便宜。" +
-			"这一页只读：不认领、不清走、不改任何一条。",
+			"只在终态条目上开一个归档口（先落 timeline、再清热层）；不认领、不改状态。",
 	}
 	if s.Hot == nil {
 		view.Why = "热层没接上 —— 起服务时给 --hot-addr（或设 ANC_HOT_ADDR）"

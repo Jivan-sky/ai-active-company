@@ -11,6 +11,7 @@ import (
 
 	"anc/internal/hot"
 	"anc/internal/org"
+	"anc/internal/tasksettle"
 	"anc/internal/timeline"
 )
 
@@ -360,7 +361,7 @@ func cmdTaskSettle(args []string) int {
 			refList = append(refList, s)
 		}
 	}
-	res, err := settleTask(st, abs, pos[1], taskSettleOpts{
+	res, err := tasksettle.Settle(st, abs, pos[1], tasksettle.Opts{
 		By: *by, Title: *title, Status: *status, Kind: *kind, Note: *note, Refs: refList,
 	})
 	if err != nil {

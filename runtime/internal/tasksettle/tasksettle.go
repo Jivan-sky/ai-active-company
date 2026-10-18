@@ -1,4 +1,9 @@
-package main
+// Package tasksettle —— 「达标」那一步：**先落库，再清热层**。
+//
+// 为什么单独一个包：CLI（`anc task settle`）、MCP（`anc_task action=settle`）、看板
+// （`POST /api/tasks/settle`）是同一件事的三个前端。三个前端必须走**同一个**入口，
+// 否则「结账」的规则迟早各写一份：一边允许把 running 落库，另一边不允许。
+package tasksettle
 
 import (
 	"errors"
@@ -10,14 +15,18 @@ import (
 	"anc/internal/timeline"
 )
 
-// taskSettleStore 是「结账」要的两件事：读当前值、清走它。
+// ErrOpen：任务还没结束（queued / running）就有人在结账。
+// 单独一个哨兵，是为了让三个前端都不用靠错误文案去猜「这是不是「还没做完」那一种」。
+var ErrOpen = errors.New("任务还没结束")
+
+// Store 是「结账」要的两件事：读当前值、清走它。
 // 没有 pull / ack —— 结账不改状态，改状态是回执那一步的事。
-type taskSettleStore interface {
+type Store interface {
 	Get(id string) (hot.State, bool, error)
 	Drop(id string) error
 }
 
-type taskSettleOpts struct {
+type Opts struct {
 	By     string   // 谁交的；空 = 任务的执行者（To）
 	Title  string   // 空 = 用任务标题
 	Status string   // 空 = 用热层里的当前态；给值 = 这次结账的判定
@@ -27,14 +36,14 @@ type taskSettleOpts struct {
 	At     time.Time
 }
 
-type taskSettleResult struct {
+type Result struct {
 	Task    hot.State
 	Entry   timeline.Entry
 	Path    string // 这次写到了哪个文件；Already = true 时为空
 	Already bool   // timeline 里已有同 case 的行，本次没重复写
 }
 
-// settleTask 是「达标」那一步：**先落库，再清热层**。
+// Settle 是「达标」那一步：**先落库，再清热层**。
 //
 // 三条口径：
 //   - 还在 queued / running 的条目默认不结账：那还是「进行中」，
@@ -43,16 +52,16 @@ type taskSettleResult struct {
 //   - 幂等：timeline 里已有同 case 的行就不再追加；热层还在就顺手清掉。
 //     重复调用不会制造第二条痕。
 //   - 落库失败时热层一个字都不动 —— 此时它还是唯一的记录。
-func settleTask(st taskSettleStore, vault, id string, o taskSettleOpts) (taskSettleResult, error) {
+func Settle(st Store, vault, id string, o Opts) (Result, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
-		return taskSettleResult{}, errors.New("结账需要任务 id")
+		return Result{}, errors.New("结账需要任务 id")
 	}
 	if st == nil {
-		return taskSettleResult{}, errors.New("热层没接上 —— 任务状态读不到")
+		return Result{}, errors.New("热层没接上 —— 任务状态读不到")
 	}
 	if strings.TrimSpace(vault) == "" {
-		return taskSettleResult{}, errors.New("缺少 vault —— 落库要写进真相源")
+		return Result{}, errors.New("缺少 vault —— 落库要写进真相源")
 	}
 	if o.At.IsZero() {
 		o.At = time.Now()
@@ -60,15 +69,15 @@ func settleTask(st taskSettleStore, vault, id string, o taskSettleOpts) (taskSet
 
 	t, found, err := st.Get(id)
 	if err != nil {
-		return taskSettleResult{}, err
+		return Result{}, err
 	}
 
 	prev, already, err := settledEntry(vault, id)
 	if err != nil {
-		return taskSettleResult{}, err
+		return Result{}, err
 	}
 	if already {
-		res := taskSettleResult{Task: t, Entry: prev, Already: true}
+		res := Result{Task: t, Entry: prev, Already: true}
 		if found {
 			if err := st.Drop(id); err != nil {
 				return res, fmt.Errorf("这条早已沉淀；热层没清掉 —— 重跑 settle 只补清这一刀：%w", err)
@@ -77,31 +86,31 @@ func settleTask(st taskSettleStore, vault, id string, o taskSettleOpts) (taskSet
 		return res, nil
 	}
 	if !found {
-		return taskSettleResult{}, fmt.Errorf("%w：%s", hot.ErrNotFound, id)
+		return Result{}, fmt.Errorf("%w：%s", hot.ErrNotFound, id)
 	}
 
 	status := firstNonEmpty(o.Status, t.Status)
 	if strings.TrimSpace(status) == "" {
-		return taskSettleResult{}, errors.New("这条没有状态 —— 先回执，或显式给 --status")
+		return Result{}, errors.New("这条没有状态 —— 先回执，或显式给 status")
 	}
 	if strings.TrimSpace(o.Status) == "" {
 		switch strings.ToLower(strings.TrimSpace(t.Status)) {
 		case "queued":
-			return taskSettleResult{}, fmt.Errorf(
-				"任务 %s 还在队列里（queued）—— 还没人拉走。要终止就显式给 --status cancelled（或其他终态）", id)
+			return Result{}, fmt.Errorf(
+				"%w：任务 %s 还在队列里（queued）—— 还没人拉走。要终止就显式给 status=cancelled（或其他终态）", ErrOpen, id)
 		case "running":
-			return taskSettleResult{}, fmt.Errorf(
-				"任务 %s 还在进行中（running）—— 还没做完的事不落库。先回执，或显式给 --status 说明这是谁的决定", id)
+			return Result{}, fmt.Errorf(
+				"%w：任务 %s 还在进行中（running）—— 还没做完的事不落库。先回执，或显式给 status 说明这是谁的决定", ErrOpen, id)
 		}
 	}
 
 	title := firstNonEmpty(o.Title, t.Title)
 	if title == "" {
-		return taskSettleResult{}, errors.New("这条没有标题 —— 用 --title 给一句（落库的行要能被人看懂）")
+		return Result{}, errors.New("这条没有标题 —— 用 title 给一句（落库的行要能被人看懂）")
 	}
 	by := firstNonEmpty(o.By, t.To, t.By)
 	if by == "" {
-		return taskSettleResult{}, errors.New("不知道是谁交的 —— 用 --by 给一个身份")
+		return Result{}, errors.New("不知道是谁交的 —— 用 by 给一个身份")
 	}
 	kind := firstNonEmpty(o.Kind, "execution")
 
@@ -116,14 +125,14 @@ func settleTask(st taskSettleStore, vault, id string, o taskSettleOpts) (taskSet
 		Domain:  t.Domain,
 		Project: t.Project,
 		Title:   title,
-		Detail:  taskDetail(t, o.Note),
+		Detail:  detail(t, o.Note),
 		Refs:    cleanRefs(o.Refs),
 	}
 	path, err := timeline.Append(vault, ent)
 	if err != nil {
-		return taskSettleResult{}, fmt.Errorf("落库失败，热层没动（先落库、再清热层）：%w", err)
+		return Result{}, fmt.Errorf("落库失败，热层没动（先落库、再清热层）：%w", err)
 	}
-	res := taskSettleResult{Task: t, Entry: ent, Path: path}
+	res := Result{Task: t, Entry: ent, Path: path}
 	if err := st.Drop(id); err != nil {
 		return res, fmt.Errorf("库已落（%s），热层没清掉 —— 重跑 settle 只会补清这一刀：%w", path, err)
 	}
@@ -145,9 +154,9 @@ func settledEntry(vault, id string) (timeline.Entry, bool, error) {
 	return timeline.Entry{}, false, nil
 }
 
-// taskDetail 把「任务正文 + 会话归属 + 版本」拼成一行可读的展开。
+// detail 把「任务正文 + 会话归属 + 版本」拼成一段可读的展开。
 // 空项不写，不留「会话：」这种空壳。
-func taskDetail(t hot.State, extra string) string {
+func detail(t hot.State, extra string) string {
 	var parts []string
 	if s := strings.TrimSpace(t.Note); s != "" {
 		parts = append(parts, s)
@@ -185,4 +194,13 @@ func cleanRefs(in []string) []string {
 		}
 	}
 	return out
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if s := strings.TrimSpace(v); s != "" {
+			return s
+		}
+	}
+	return ""
 }

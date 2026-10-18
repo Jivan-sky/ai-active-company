@@ -1,4 +1,4 @@
-package main
+package tasksettle
 
 import (
 	"errors"
@@ -51,7 +51,7 @@ func TestSettleTaskWritesEntryAndDrops(t *testing.T) {
 	vault := t.TempDir()
 	st := &fakeSettleStore{m: map[string]hot.State{"t-1": settledTask()}}
 
-	res, err := settleTask(st, vault, "t-1", taskSettleOpts{At: settleAt})
+	res, err := Settle(st, vault, "t-1", Opts{At: settleAt})
 	if err != nil {
 		t.Fatalf("结账失败：%v", err)
 	}
@@ -87,10 +87,10 @@ func TestSettleTaskWritesEntryAndDrops(t *testing.T) {
 func TestSettleTaskIsIdempotent(t *testing.T) {
 	vault := t.TempDir()
 	st := &fakeSettleStore{m: map[string]hot.State{"t-1": settledTask()}}
-	if _, err := settleTask(st, vault, "t-1", taskSettleOpts{At: settleAt}); err != nil {
+	if _, err := Settle(st, vault, "t-1", Opts{At: settleAt}); err != nil {
 		t.Fatal(err)
 	}
-	res, err := settleTask(st, vault, "t-1", taskSettleOpts{At: settleAt.Add(time.Hour)})
+	res, err := Settle(st, vault, "t-1", Opts{At: settleAt.Add(time.Hour)})
 	if err != nil {
 		t.Fatalf("重复结账不该报错：%v", err)
 	}
@@ -111,7 +111,7 @@ func TestSettleTaskRefusesOpenTask(t *testing.T) {
 	queued := settledTask()
 	queued.Status = "queued"
 	st := &fakeSettleStore{m: map[string]hot.State{"t-1": queued}}
-	if _, err := settleTask(st, vault, "t-1", taskSettleOpts{At: settleAt}); err == nil ||
+	if _, err := Settle(st, vault, "t-1", Opts{At: settleAt}); err == nil ||
 		!strings.Contains(err.Error(), "还在队列里") {
 		t.Fatalf("queued 默认不该结账：%v", err)
 	}
@@ -122,12 +122,12 @@ func TestSettleTaskRefusesOpenTask(t *testing.T) {
 	running := settledTask()
 	running.Status = "running"
 	st = &fakeSettleStore{m: map[string]hot.State{"t-1": running}}
-	if _, err := settleTask(st, vault, "t-1", taskSettleOpts{At: settleAt}); err == nil ||
+	if _, err := Settle(st, vault, "t-1", Opts{At: settleAt}); err == nil ||
 		!strings.Contains(err.Error(), "还在进行中") {
 		t.Fatalf("running 默认不该结账：%v", err)
 	}
 
-	res, err := settleTask(st, vault, "t-1", taskSettleOpts{At: settleAt, Status: "cancelled", Note: "客户撤回"})
+	res, err := Settle(st, vault, "t-1", Opts{At: settleAt, Status: "cancelled", Note: "客户撤回"})
 	if err != nil {
 		t.Fatalf("显式给终态应能结账：%v", err)
 	}
@@ -146,7 +146,7 @@ func TestSettleTaskKeepsHotWhenTimelineFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := &fakeSettleStore{m: map[string]hot.State{"t-1": settledTask()}}
-	_, err := settleTask(st, vault, "t-1", taskSettleOpts{At: settleAt, By: "human"})
+	_, err := Settle(st, vault, "t-1", Opts{At: settleAt, By: "human"})
 	if err == nil || !strings.Contains(err.Error(), "落库失败") {
 		t.Fatalf("落库失败应报出来：%v", err)
 	}
@@ -158,7 +158,7 @@ func TestSettleTaskKeepsHotWhenTimelineFails(t *testing.T) {
 func TestSettleTaskReportsDropFailure(t *testing.T) {
 	vault := t.TempDir()
 	st := &fakeSettleStore{m: map[string]hot.State{"t-1": settledTask()}, dropErr: errors.New("redis down")}
-	res, err := settleTask(st, vault, "t-1", taskSettleOpts{At: settleAt})
+	res, err := Settle(st, vault, "t-1", Opts{At: settleAt})
 	if err == nil || !strings.Contains(err.Error(), "库已落") {
 		t.Fatalf("清热层失败要说清已落库：%v", err)
 	}

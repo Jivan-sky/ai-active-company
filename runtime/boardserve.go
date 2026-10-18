@@ -19,7 +19,7 @@ import (
 	"anc/internal/org"
 )
 
-const boardServeUsage = `anc board serve —— 起 ANC 看板（默认只读；唯一的写口是审批信号）
+const boardServeUsage = `anc board serve —— 起 ANC 看板（读为主；写只有两个与 CLI 同源的入口）
 
 用法：
   anc board serve <vault 目录> [--addr 127.0.0.1:8787] [--data <data 目录>]
@@ -41,14 +41,15 @@ const boardServeUsage = `anc board serve —— 起 ANC 看板（默认只读；
   --agent-stale <时长> 多久没心跳不算在线；默认 2m，也可用 ANC_AGENT_STALE。
                        它只打「不新鲜」标记，**不删心跳** —— 最后心跳时间仍会留着。
   --ui-dir <目录>     前端静态资源目录；默认用**内嵌的那份**。指到磁盘上的一份就覆盖它 ——
-                       这一项只换「前端文件从哪来」，不动路由与只读口径。目录写错**直接退**。
+                       这一项只换「前端文件从哪来」，不动路由与写口。目录写错**直接退**。
 
 安全口径：
-  - **默认只读**：只放行 GET / HEAD。唯一的写口是审批信号 POST /api/approvals/decide ——
-    SPEC §7：CLI / 对话式 bot / 看板是**同一条变更管道的三个前端**；那条路只留痕，不写真相源。
-  - 那条写口只收 POST + application/json（跨站表单发不出这个 Content-Type，浏览器会先发预检，
+  - **默认只读**：只放行 GET / HEAD。写只有两处，都与 CLI 共用同一个领域入口：
+    POST /api/approvals/decide（审批信号；只留痕，不写真相源）与
+    POST /api/tasks/settle（终态任务归档；先落 timeline、再清热层）。
+  - 两条写口都只收 POST + application/json（跨站表单发不出这个 Content-Type，浏览器会先发预检，
     而我们不回 CORS 头 —— 所以没有 token 也挡得住「别的网页替你点头」）；请求体限 64KB。
-  - **不校「点的人是不是该批的人」**：请求里带的 by 原样留痕，判断交给 agent。
+  - **不校「点的人是不是该批的人」**：请求里带的 by 原样留痕，判断交给 agent（归档同口径）。
   - 默认只绑本机 —— 看板里有组织与项目信息，要给别人看请走 ssh 端口转发，
     别把 0.0.0.0 直接开出去；
   - 投影里不含凭据面字段（feishu app_id / open_id 等一律不进）。
@@ -56,8 +57,9 @@ const boardServeUsage = `anc board serve —— 起 ANC 看板（默认只读；
 退出：Ctrl-C。
 `
 
-// cmdBoardServe 起看板（默认只读）。它不写真相源、不装载服务 —— 与阶段 C 的 `anc serve` 不是同一件事。
-// 唯一的写口是审批信号：那条路与 CLI 同一个入口，只留痕（见 internal/board/approvals.go）。
+// cmdBoardServe 起看板（读为主）。它不装载服务 —— 与阶段 C 的 `anc serve` 不是同一件事。
+// 写只有两处，都与 CLI 同一个领域入口：审批信号（approvals.go，只留痕）
+// 与任务归档（tasks.go，落 timeline）。
 func cmdBoardServe(args []string) int {
 	fs := flag.NewFlagSet("board serve", flag.ContinueOnError)
 	addr := fs.String("addr", "127.0.0.1:8787", "监听地址")
@@ -150,9 +152,10 @@ func cmdBoardServe(args []string) int {
 		bs.Approvals = st
 		bs.Hot = st
 		bs.Agents = st
+		bs.Tasks = st
 	}
 
-	fmt.Printf("ANC 看板已起（默认只读）：\n")
+	fmt.Printf("ANC 看板已起（读为主；写只有两个与 CLI 同源的入口）：\n")
 	fmt.Printf("  地址   http://%s\n", urlHost)
 	fmt.Printf("  vault  %s\n", abs)
 	if uiFS == nil {
@@ -175,7 +178,9 @@ func cmdBoardServe(args []string) int {
 	} else {
 		fmt.Printf("  Agent  心跳已接入（%s 没心跳不算在线）\n", bs.Agents.AgentStale())
 	}
-	fmt.Printf("  写口   只有一处：POST http://%s%s（审批信号；只留痕，不写真相源）\n", urlHost, board.WritePath)
+	fmt.Printf("  写口   两处，都与 CLI 共用同一个领域入口：\n")
+	fmt.Printf("          POST http://%s%s（审批信号；只留痕，不写真相源）\n", urlHost, board.WritePath)
+	fmt.Printf("          POST http://%s%s（任务归档；先落 timeline、再清热层）\n", urlHost, board.SettlePath)
 	fmt.Printf("  退出   Ctrl-C\n\n")
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)

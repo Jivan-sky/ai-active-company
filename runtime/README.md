@@ -316,7 +316,7 @@ anc board serve <vault> [--addr 127.0.0.1:8787] [--data <data 目录>] [--hot-ad
                         [--ui-dir <前端目录>]
 ```
 
-一个**几乎只读**的本地看板（唯一的写口是「待批」页的点头，见下）。**分页，不挤一页** —— 一页只回答一个问题，那句问题就写在页头：
+一个**几乎只读**的本地看板（写只有两处：「待批」页的点头、热层终态条目的归档，见下）。**分页，不挤一页** —— 一页只回答一个问题，那句问题就写在页头：
 
 前端**默认**用嵌在二进制里的那份（一个 exe 就起来）；`--ui-dir` 指到磁盘上的一份就**覆盖**它。
 覆盖是替换不是叠加，且只换「前端文件从哪来」—— 路由、只读口径、端点一个都不动。目录写错直接退。
@@ -324,7 +324,7 @@ anc board serve <vault> [--addr 127.0.0.1:8787] [--data <data 目录>] [--hot-ad
 | 页 | 回答什么 | 读者 | 数据源 | 现状 |
 |---|---|---|---|---|
 | 总览 | 现在有没有事？ | 所有人 / 老板 | 投影 + 校验发现 | 已接入 |
-| 待批 | 哪几件事在等人点头、该谁点？ | 该点头的人 | 待批队列（热层 `prop:` 前缀）+ 三个信号 | 已接入（**唯一能写的一页**；点头只留痕；每条带靛蓝「等你给一句话」那一档） |
+| 待批 | 哪几件事在等人点头、该谁点？ | 该点头的人 | 待批队列（热层 `prop:` 前缀）+ 三个信号 | 已接入（**能写**；点头只留痕；每条带靛蓝「等你给一句话」那一档） |
 | 组织 | 公司长什么样、边界在哪？ | 管理者 / FDE | 投影（域 / 角色 / 成员 / 路由） | 已接入 |
 | 项目 | 谁在做什么、到几号、卡住找谁？ | 跟进的人 / 老板 | 投影（`projects.md`） | 已接入 |
 | 上下文 | 一个 agent 的工作上下文是什么？ | 接手的人 / FDE | 装配点（`internal/ctxpack`，与 `anc context pack` 同一处）+ 真相源 | 已接入（**一个装配点、两个出口**：看板一页 + 冻结副本） |
@@ -358,12 +358,16 @@ anc board serve <vault> [--addr 127.0.0.1:8787] [--data <data 目录>] [--hot-ad
   （只在「待批」页出现：在待批队列里 = 有人在等你点头，**不从 status 推**）/ 空心虚线圈 = **没人判过**
   （认不出的词）/ 灰实心 = **本来就不该期待**（真相源声明 `unwired`）。两种灰必须分开：
   一个要人去判它，一个不要 —— 共用一个符号就没人分得清「没判过」和「没轮到它」。
-- **只读是硬约束，唯一的例外是审批**：其余一律只放行 GET / HEAD，别的方法 405（带 `Allow` 头）——
-  没有写入口，就不存在越权写入口。**唯一的写口**是 `POST /api/approvals/decide`（「待批」页那次点头）：
-  它走的是与 `anc approvals decide` **同一个入口、同一份留痕**（`timeline` 一条 + `audit` 一条），
-  **只留痕、不写真相源**（SPEC §7：一条管道、三个前端）。那条口只收 `POST` + `application/json`
-  （跨站表单发不出这个 Content-Type，浏览器会先发预检而看板不回 CORS 头）、请求体限 64KB，
-  **不校「点的人是不是该批的人」**（`by` 原样留痕，判断交给 agent）。
+- **只读是默认；写只有两处，都与 CLI 同源**：其余一律只放行 GET / HEAD，别的方法 405（带 `Allow` 头）——
+  没有多出来的写入口，就不存在多出来的越权面。两处写口：
+  - `POST /api/approvals/decide`（「待批」页那次点头）：与 `anc approvals decide` **同一个入口、
+    同一份留痕**（`timeline` 一条 + `audit` 一条），**只留痕、不写真相源**；
+  - `POST /api/tasks/settle`（热层终态条目的归档）：与 `anc task settle` / MCP `anc_task settle`
+    **同一个领域入口**（`internal/tasksettle`）—— 先落 `timeline`、再清热层，幂等；
+    queued / running 默认拒结，要终止必须显式给 `status`。
+  两条口都只收 `POST` + `application/json`（跨站表单发不出这个 Content-Type，浏览器会先发预检
+  而看板不回 CORS 头）、请求体限 64KB，**不校「点的人是不是该批的人」**（`by` 原样留痕，
+  判断交给 agent；归档时中文显示名会尽量对到已登记成员的 slug）。
 - **「待批」页要热层**：起服务时给 `--hot-addr`（或 `ANC_HOT_ADDR`，默认 `127.0.0.1:6379`）。
   **接不上不拦看板**：那一页如实报「没接上」，不拿一份空队列冒充「没人提」。
 - **默认只绑 `127.0.0.1`**：看板里有组织与项目信息。要给别人看请走 ssh 端口转发；
@@ -713,7 +717,7 @@ harness **H1–H4**、业务 agent 独立账号的五件套。判据一句话：
   导航点击切换 / 浏览器后退 / 零控制台错误。**DOM 级**跑过两轮：九页时逐路由 `--dump-dom` 页页命中真数据、
   无红块；2026-10-15 补跑「授权」页三档（全量 / `?who=alice` / `?who=ghost`），三档都命中，
   且「认不出」那一档渲染的是**说明**、不是空表）。
-- 待批页（2026-10-10，全看板**唯一能写**的一页）：端点与拒法都有测试（`GET` 写口 → 405 + `Allow: POST`、
+- 待批页（2026-10-10，写口之一）：端点与拒法都有测试（`GET` 写口 → 405 + `Allow: POST`、
   跨站表单 → 415、匿名/认不出的信号/坏 JSON → 400、不在队列 → 409、热层没接上 → 503；契约是 snake_case，
   另有一条专门断言**不泄漏 Go 字段名**）。**真 VM 实测**（Ubuntu 24.04 + 真 Redis 7.0.15 + 真 HTTP）：
   只读那一路拿到两条待批；点头 200 且回执把两个落点（已摘本机路径）+「真相源没动」都摆出来；
@@ -722,6 +726,10 @@ harness **H1–H4**、业务 agent 独立账号的五件套。判据一句话：
   `devbot`、`已等 2 小时`、三个按钮），再用 **CDP 真点了一下「同意」** —— 填 `by` → 点 → 回执出现 →
   队列 2 条变 1 条。**没验的**：真机观感（字体、屏宽折行）；飞书卡片在**真飞书**里的观感
  （卡片 JSON 与回程都是真的，见下一段的实测 —— 但「点一下真按钮」这一步过不了网关那一侧，缺上游的口）。
+- 热层归档（2026-10-18，看板第二个写口）：`POST /api/tasks/settle` 与 CLI / MCP 走同一个
+  `tasksettle.Settle`。测试覆盖：GET 写口 → 405 + `Allow: POST`、匿名 → 400、queued / running → 409、
+  已沉淀 → 200 `already=true` 且不追加第二行、中文显示名 → 成员 slug。**真 Redis + 真 HTTP 实测**：
+  done 任务从看板归档后热层归零、`/api/timeline` 出现绿色 case；重复归档只回「早已沉淀」。
 - 探针第四档「灰」（2026-10-09）：单元 6 条（`internal/probe` / `internal/render` / `internal/board` /
   端到端各一条，共 7 条），**变异验证**过（删掉 `AllGreen` 里那行 `continue` → 两条立刻变红）。
   **真 VM 实测**：`unwired: true` 声明 → `anc probe` 退出码 **0**、`anc apply` 回读一致、
@@ -860,7 +868,8 @@ pwsh -File build.ps1 -Only local  # 只编本机 windows/amd64
 | `internal/approvals/` | 待批队列与结账：热层进出 + 「先落库、再清热层」（口径写在包注释里） |
 | `internal/timeline/` | 决策与执行留存的读写与折叠（纯 Go 标准库；按作者分片、词表不锁死） |
 | `internal/board/timeline.go` | 时间线的只读出口（`/api/timeline`，`anc.timeline/v1`） |
-| `internal/board/approvals.go` | 待批的只读出口（`/api/approvals`）+ 看板**唯一写口**（`/api/approvals/decide`） |
+| `internal/board/approvals.go` | 待批的只读出口（`/api/approvals`）+ 审批写口（`/api/approvals/decide`） |
+| `internal/board/tasks.go` | 任务归档写口（`/api/tasks/settle`）：与 CLI / MCP 共用 `internal/tasksettle` |
 | `internal/board/context.go` | 上下文的只读出口（`/api/context`，`anc.context/v1`）：不给 who 回名单，给 who 回那一份 |
 | `audit.go` | `anc audit` 的 CLI：`log` / `add` / `collect` / `tools` / `rules`（事后归集 + 显式补记） |
 | `internal/audit/redact.go` | 审计落盘前的强制脱敏（规则是数据；三条腿；抹成指针；没有开关） |
