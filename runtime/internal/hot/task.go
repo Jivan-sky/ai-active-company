@@ -43,7 +43,7 @@ func (st *Store) EnqueueTask(spec TaskSpec) (State, error) {
 		intent = "queue"
 	}
 	s := State{
-		ID: id, To: to, By: strings.TrimSpace(spec.By),
+		ID: id, To: to, By: strings.TrimSpace(spec.By), From: strings.TrimSpace(spec.By),
 		Title: strings.TrimSpace(spec.Title), Note: strings.TrimSpace(spec.Note),
 		Domain: strings.TrimSpace(spec.Domain), Project: strings.TrimSpace(spec.Project),
 		Session: strings.TrimSpace(spec.Session), Intent: intent,

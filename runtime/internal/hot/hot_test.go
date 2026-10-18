@@ -128,7 +128,7 @@ func TestRESPErrorReply(t *testing.T) {
 
 func TestFieldsRoundTrip(t *testing.T) {
 	in := State{
-		ID: "t-1", Status: "running", By: "alice", To: "bob", Domain: "ops", Project: "P",
+		ID: "t-1", Status: "running", By: "alice", From: "lead", To: "bob", Domain: "ops", Project: "P",
 		Title: "一句话", Note: "备注", AsOf: "2026-10-10T10:00:00+08:00",
 		Session: "s-1", Intent: "interrupt", Version: 7,
 	}
@@ -147,7 +147,7 @@ func TestFieldsWriteEmptyOnesToo(t *testing.T) {
 	if _, ok := m["to"]; !ok {
 		t.Fatalf("空字段没被写出去：%#v", m)
 	}
-	if len(m) != 12 {
+	if len(m) != 13 {
 		t.Fatalf("字段数变了（%d）—— 加字段时顺手把这里的数一起改", len(m))
 	}
 }

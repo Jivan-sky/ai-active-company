@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"anc/internal/hot"
+	"anc/internal/timeline"
 )
 
 type fakeTasks struct {
@@ -23,7 +24,7 @@ func (f *fakeTasks) EnqueueTask(spec hot.TaskSpec) (hot.State, error) {
 		return hot.State{}, fmt.Errorf("duplicate %s", spec.ID)
 	}
 	s := hot.State{
-		ID: spec.ID, To: spec.To, By: spec.By, Title: spec.Title, Note: spec.Note,
+		ID: spec.ID, To: spec.To, By: spec.By, From: spec.By, Title: spec.Title, Note: spec.Note,
 		Domain: spec.Domain, Project: spec.Project, Session: spec.Session,
 		Intent: spec.Intent, Status: "queued", Version: 1,
 		AsOf: time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC).Format(time.RFC3339),
@@ -67,6 +68,16 @@ func (f *fakeTasks) AckTask(id, who, status, note string) (hot.State, error) {
 	}
 	f.m[id] = s
 	return s, nil
+}
+
+func (f *fakeTasks) Get(id string) (hot.State, bool, error) {
+	s, ok := f.m[id]
+	return s, ok, nil
+}
+
+func (f *fakeTasks) Drop(id string) error {
+	delete(f.m, id)
+	return nil
 }
 
 func (f *fakeTasks) List() ([]hot.State, error) {
@@ -153,6 +164,47 @@ func TestTaskPullModelAndVersion(t *testing.T) {
 	at := ack["task"].(map[string]any)
 	if at["status"] != "done" || at["version"] != float64(3) || at["note"] != "完成" {
 		t.Fatalf("ack 契约不对：%v", at)
+	}
+}
+
+func TestTaskSettleThroughMCP(t *testing.T) {
+	h, g, _ := beatHarness(t)
+	ft := newFakeTasks()
+	g.Tasks = ft
+
+	callTool(t, h, "anc_task", map[string]any{"action": "enqueue", "id": "t-9", "to": "tradebot", "title": "归档测试", "session": "s-1"})
+	callTool(t, h, "anc_task", map[string]any{"action": "pull", "who": "tradebot"})
+	callTool(t, h, "anc_task", map[string]any{"action": "ack", "id": "t-9", "who": "tradebot", "status": "done", "note": "做完"})
+
+	text, isErr := callTool(t, h, "anc_task", map[string]any{"action": "settle", "id": "t-9", "who": "tradebot"})
+	if isErr {
+		t.Fatalf("settle 失败：%s", text)
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(text), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out["already"] != false || out["timeline"] == nil {
+		t.Fatalf("settle 契约不对：%v", out)
+	}
+	entry := out["entry"].(map[string]any)
+	if entry["case"] != "t-9" || entry["status"] != "done" || entry["by"] != "tradebot" {
+		t.Fatalf("落库字段不对：%v", entry)
+	}
+	if _, ok := ft.m["t-9"]; ok {
+		t.Fatal("settle 后热层应清走")
+	}
+
+	text, isErr = callTool(t, h, "anc_task", map[string]any{"action": "settle", "id": "t-9"})
+	if isErr || !strings.Contains(text, "早已沉淀") {
+		t.Fatalf("重复 settle 应幂等：isErr=%v %s", isErr, text)
+	}
+	doc, err := timeline.Load(g.Vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Entries) != 1 {
+		t.Fatalf("timeline 只该有一条：%d", len(doc.Entries))
 	}
 }
 

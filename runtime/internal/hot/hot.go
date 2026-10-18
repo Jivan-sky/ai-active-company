@@ -56,7 +56,8 @@ const (
 type State struct {
 	ID      string // 用的是 timeline 的 case id —— 一份 id 贯穿热层与真相源
 	Status  string // 沿用 timeline 的档位词：done / running / blocked / failed（认不出的照收）
-	By      string // 谁在做
+	By      string // 谁在做（pull 时改成本人）
+	From    string // 谁派的（入队时钉住，之后不再改）
 	To      string // 下一手该交给谁
 	Domain  string
 	Project string
@@ -77,6 +78,7 @@ func (s State) Fields() map[string]string {
 		"id":      s.ID,
 		"status":  s.Status,
 		"by":      s.By,
+		"from":    s.From,
 		"to":      s.To,
 		"domain":  s.Domain,
 		"project": s.Project,
@@ -97,6 +99,7 @@ func StateFromFields(m map[string]string) State {
 		ID:      m["id"],
 		Status:  m["status"],
 		By:      m["by"],
+		From:    m["from"],
 		To:      m["to"],
 		Domain:  m["domain"],
 		Project: m["project"],

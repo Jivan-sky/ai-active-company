@@ -3540,7 +3540,9 @@ D5 在 2026-10-07 就拍了 (a)「合成一棵树、以客户库为根」，但 
 就会绕过 harness 自己的回合状态，第二条指令改掉第一条的前提。
 
 **落点**：
-- 任务仍住热层（`hot.State`），新增 `session / intent / version` 三格；
+- 任务仍住热层（`hot.State`），新增 `session / intent / version` 三格与 `from`（派单方）：
+  `by` 在 pull 时会被改成认领人，`from` 入队时钉住、之后不再改 —— 「谁派的」与「谁做的」
+  是两件事，混成一格就会在沉淀时丢掉派单方。
   `queued → running → done|blocked|failed` 全是**当前值**，不新开第二套任务库。
 - MCP `anc_task(action=enqueue|pull|ack|list)`：
   - `enqueue` 由 ANC / 人派活；若目标 agent 手上已有 running，回话如实报 `queue_behind_running`；
@@ -3559,6 +3561,34 @@ D5 在 2026-10-07 就拍了 (a)「合成一棵树、以客户库为根」，但 
 **实测**：`go test ./...` 全绿（含内存热层上的 enqueue→pull→ack、重复 id、越权回执、
 limit/顺序、MCP 冲突与未知身份）；`npm run check` 通过；真 Redis + 真 MCP 跑通
 `rotate → enqueue(intent=interrupt) → pull(v2) → 看板 running_tasks=1 → ack(done v3)`。
+
+### 7.1.66 完成态落库：`settle` 是显式一刀，不是 ack 的副作用（2026-10-18）
+
+**问题**：`ack` 写的 `done` 仍只是热层里的**当前值**。如果 ack 顺手落库，一次误回执就会在
+真相源里留下一条「已完成」；如果谁也不落库，达标的事又会随热层清理一起消失。
+
+**落点**：
+- `anc task settle <vault> <id>` 与 MCP `anc_task(action=settle)` 走同一个函数（`settleTask`）：
+  1. 读热层当前值；2. 幂等检查 timeline（同 `case` 或 `id=task-<id>` 已存在）；
+  3. 写一条 `timeline.Entry`（`case=<任务 id>`、`kind=execution`、`status` = 当前态或显式覆盖、
+     `by` = 执行者、带上 `to / domain / project / title`，`detail` 带任务正文、会话、意图、
+     派单方与版本）；4. 落库成功后 `Drop` 热层。
+- **queued / running 默认不结账**：那还是「进行中」，结账等于把没做完的事从看板抹掉。
+  要终止就显式给 `status`（`cancelled` / `failed` / …），把「这是谁的决定」留在记录里。
+- **幂等**：timeline 里已有同 case 的行就不再追加；热层还在就顺手清掉。
+  重复调用不会制造第二条痕。
+- **失败分两种说法**：落库失败 → 热层一个字都不动（此时它还是唯一记录）；
+  库已落、热层没清掉 → 如实报出落库路径，重跑 `settle` 只补清热层。
+- `ack` 保持纯回执：**沉淀永远是显式一刀**，不由状态词自动触发。
+
+**没做什么**：没有做「完成后自动蒸馏 Skill」—— 先把「任务 → timeline → 看板可追溯」
+这条链走顺，Skill 候选与人工确认再另起议题。
+
+**实测**：`go test ./...` 全绿（settle 单测覆盖：落库 + 清热层、幂等、queued / running 拒结、
+落库失败不动热层、清热层失败报「库已落」；MCP 端到端）；`npm run check` 通过。
+真 Redis（前缀 `anc-settle-test`）+ 真 MCP：`enqueue → pull(v2) → ack(done v3) → settle`
+写出 `timeline/2026-10.receptionbot.jsonl`，热层归零；重复 settle 回「已在 timeline」且只有一行；
+`/api/timeline` 报 `total=3 / green=3`。
 
 ## 8. 与 SPEC 的映射
 

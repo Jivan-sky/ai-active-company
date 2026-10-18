@@ -33,6 +33,7 @@ type HotEntryView struct {
 	Status  string `json:"status"`
 	Title   string `json:"title"`
 	By      string `json:"by,omitempty"`
+	From    string `json:"from,omitempty"`
 	To      string `json:"to,omitempty"`
 	AsOf    string `json:"as_of,omitempty"`
 	Session string `json:"session,omitempty"`
@@ -94,7 +95,7 @@ func (s *Server) handleHot(w http.ResponseWriter, r *http.Request) {
 	rows := make([]hotRow, 0, len(list))
 	for _, st := range list {
 		e := HotEntryView{
-			ID: st.ID, Status: st.Status, Title: st.Title, By: st.By, To: st.To,
+			ID: st.ID, Status: st.Status, Title: st.Title, By: st.By, From: st.From, To: st.To,
 			AsOf: st.AsOf, Session: st.Session, Intent: st.Intent, Version: st.Version,
 		}
 		age, ok := st.Age(now)

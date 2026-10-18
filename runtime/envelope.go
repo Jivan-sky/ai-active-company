@@ -194,7 +194,7 @@ harness（Claude Code / Codex / …）通过 MCP 调工具。桥的两半都在�
   入站（agent 递给 ANC）  anc_send_envelope(who, on_behalf_of?, kind?, body, scope_domain?, scope_project?, refs?, needs?)
   出站（agent 向 ANC 要）  anc_read_context(who, on_behalf_of?, domain?)
   心跳（agent 报在线）    anc_agent_heartbeat(who, status?, task_id?, note?)
-  任务（pull 模型）       anc_task(action=enqueue|pull|ack|list)
+  任务（pull 模型）       anc_task(action=enqueue|pull|ack|list|settle)
   会话（只记录归属）      anc_session(action=get|rotate, who)
 
 入站服务端做的事，一件不多：
@@ -250,6 +250,9 @@ type taskQueue interface {
 	PullTasks(to string, limit int, lease time.Duration, session string) ([]hot.State, error)
 	AckTask(id, who, status, note string) (hot.State, error)
 	List() ([]hot.State, error)
+	// Get / Drop 是「结账」那一刀：先落 timeline，再把当前值清走。
+	Get(id string) (hot.State, bool, error)
+	Drop(id string) error
 }
 
 // envelopeIngress 是接入面本身：一个 vault + 一个 data 目录 + 一个热层 + 一个时钟。
@@ -341,23 +344,26 @@ func (g *envelopeIngress) srv() *mcp.Server {
 			Description: "任务队列（**pull 模型**）：ANC 只入队，agent 自己拉；ANC 不 push、不杀会话。" +
 				"action=enqueue 由 ANC / 人派活（to 必须是 agents.md 里真实存在的 agent）；" +
 				"action=pull 由 agent 拉走交给自己的任务（原子认领，返回 session / intent / version）；" +
-				"action=ack 回执（只有被派的人能回）；action=list 只读查看。" +
+				"action=ack 回执（只有被派的人能回）；action=settle 结账（先落 timeline、再清热层，幂等）；" +
+				"action=list 只读查看。" +
 				"intent=interrupt 只是随任务带过去的**请求**，是否打断当前回合由 agent 自己决定。",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"action":  map[string]any{"type": "string", "description": "enqueue / pull / ack / list"},
-					"id":      map[string]any{"type": "string", "description": "任务 id（enqueue 可选；ack 必填）"},
+					"action":  map[string]any{"type": "string", "description": "enqueue / pull / ack / list / settle"},
+					"id":      map[string]any{"type": "string", "description": "任务 id（enqueue 可选；ack / settle 必填）"},
 					"to":      map[string]any{"type": "string", "description": "交给哪个业务 agent（slug 或 name）"},
-					"who":     map[string]any{"type": "string", "description": "pull / ack 的 agent 身份（slug 或 name）"},
+					"who":     map[string]any{"type": "string", "description": "pull / ack / settle 的 agent 身份（slug 或 name）"},
 					"title":   map[string]any{"type": "string", "description": "一句话任务（enqueue）"},
 					"note":    map[string]any{"type": "string", "description": "正文 / 回执说明"},
 					"domain":  map[string]any{"type": "string", "description": "业务域 slug（可选）"},
 					"project": map[string]any{"type": "string", "description": "项目 slug（可选）"},
 					"session": map[string]any{"type": "string", "description": "会话 id（可选；不填 = 沿用 agent 当前会话）"},
 					"intent":  map[string]any{"type": "string", "description": "queue / interrupt / new_session（默认 queue；ANC 只转达）"},
-					"status":  map[string]any{"type": "string", "description": "ack 的状态词：done / blocked / failed / cancelled …（认不出的照收）"},
+					"status":  map[string]any{"type": "string", "description": "ack / settle 的状态词：done / blocked / failed / cancelled …（认不出的照收）"},
 					"limit":   map[string]any{"type": "number", "description": "pull / list 最多几条（默认 pull=1、list=50）"},
+					"kind":    map[string]any{"type": "string", "description": "settle 落库类型：execution / decision / note（默认 execution）"},
+					"refs":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "settle 引用（文件 / 链接，可选）"},
 				},
 				"required": []string{"action"},
 			},
@@ -530,6 +536,40 @@ func (g *envelopeIngress) taskOp(args map[string]any) (string, bool) {
 			return "回执没记上：" + err.Error(), true
 		}
 		return mustJSON(map[string]any{"ok": true, "task": taskMap(saved, "")}), false
+	case "settle":
+		id := strings.TrimSpace(strArg(args, "id"))
+		if id == "" {
+			return "settle 需要 id", true
+		}
+		by := ""
+		if w := strings.TrimSpace(strArg(args, "who")); w != "" {
+			a, why := findAgent(o, w)
+			if why != "" {
+				return why, true
+			}
+			by = a.Slug
+		}
+		res, err := settleTask(g.Tasks, g.Vault, id, taskSettleOpts{
+			By: by, Title: strArg(args, "title"), Status: strArg(args, "status"),
+			Kind: strArg(args, "kind"), Note: strArg(args, "note"), Refs: listArg(args, "refs"),
+		})
+		if err != nil {
+			return "结账没成：" + err.Error(), true
+		}
+		note := "已先落 timeline、再清热层。"
+		if res.Already {
+			note = "这条早已沉淀，本次没重复写。"
+		}
+		out := map[string]any{
+			"ok": true, "already": res.Already, "entry": res.Entry, "note": note,
+		}
+		if res.Path != "" {
+			out["timeline"] = res.Path
+		}
+		if res.Task.ID != "" {
+			out["task"] = taskMap(res.Task, "")
+		}
+		return mustJSON(out), false
 	case "list":
 		list, err := g.Tasks.List()
 		if err != nil {
@@ -646,7 +686,7 @@ func taskMap(s hot.State, currentSession string) map[string]any {
 	}
 	return map[string]any{
 		"id": s.ID, "status": s.Status, "title": s.Title, "note": s.Note,
-		"by": s.By, "to": s.To, "domain": s.Domain, "project": s.Project,
+		"by": s.By, "from": s.From, "to": s.To, "domain": s.Domain, "project": s.Project,
 		"session": session, "intent": s.Intent, "version": s.Version,
 		"same_session": currentSession == "" || session == currentSession,
 		"as_of":        s.AsOf,

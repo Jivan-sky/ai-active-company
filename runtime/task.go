@@ -11,6 +11,7 @@ import (
 
 	"anc/internal/hot"
 	"anc/internal/org"
+	"anc/internal/timeline"
 )
 
 // anc task —— 拉取式任务队列。ANC 只入队；agent 用 MCP 的 anc_task pull 自己拉。
@@ -22,6 +23,8 @@ const taskUsage = `anc task —— 拉取式任务队列（ANC 只入队，agent
                        [--session <会话>] [--intent queue|interrupt|new_session]
   anc task pull <vault> --who <agent> [--limit 1] [--lease 10m] [--json]
   anc task ack <vault> <id> --who <agent> --status done [--note <回执>]
+  anc task settle <vault> <id> [--by <谁>] [--status <终态>] [--title <一句话>]
+                                [--note <结账说明>] [--kind execution] [--refs a,b]
   anc task ls <vault> [--who <agent>] [--status queued|running|done] [--limit 50] [--json]
 
 配置：
@@ -32,7 +35,9 @@ const taskUsage = `anc task —— 拉取式任务队列（ANC 只入队，agent
   · **ANC 不 push、不杀会话**：入队只是把事写进队列；agent 下次 pull 才看到。
   · intent=interrupt 是**请求**，是否打断当前回合由 agent 自己决定。
   · pull 原子认领（SET NX）；两个 agent 同时拉，同一条只落到一个手里。
-  · 回执只有被派的人能写；done 先留在热层，等落库那一步再清走。
+  · 回执只有被派的人能写；done 先留在热层，等 settle 那一步再清走。
+  · settle = 先落库、再清热层；queued / running 默认不结账（要终止就显式给 status）。
+  · settle 幂等：timeline 里已有同 case 的行就不再追加。
 `
 
 func cmdTask(args []string) int {
@@ -47,6 +52,8 @@ func cmdTask(args []string) int {
 		return cmdTaskPull(args[1:])
 	case "ack":
 		return cmdTaskAck(args[1:])
+	case "settle":
+		return cmdTaskSettle(args[1:])
 	case "ls", "list":
 		return cmdTaskLs(args[1:])
 	}
@@ -293,7 +300,7 @@ func cmdTaskLs(args []string) int {
 		if len(out) >= *limit {
 			break
 		}
-		if want != "" && t.To != want && t.By != want {
+		if want != "" && t.To != want && t.By != want && t.From != want {
 			continue
 		}
 		if strings.TrimSpace(*status) != "" && t.Status != *status {
@@ -316,6 +323,64 @@ func cmdTaskLs(args []string) int {
 	for _, t := range out {
 		fmt.Printf("  %-20s %-9s v%-3d →%-14s %s\n", t.ID, t.Status, t.Version, t.To, t.Title)
 	}
+	return 0
+}
+
+func cmdTaskSettle(args []string) int {
+	fs := flag.NewFlagSet("task settle", flag.ContinueOnError)
+	o := addTaskOpts(fs)
+	by := fs.String("by", "", "谁交的（默认 = 任务的执行者）")
+	status := fs.String("status", "", "这次结账的终态；不给 = 用热层里的当前态")
+	title := fs.String("title", "", "一句话（默认用任务标题）")
+	note := fs.String("note", "", "结账说明")
+	kind := fs.String("kind", "execution", "decision / execution / note")
+	refs := fs.String("refs", "", "引用，逗号分隔")
+	flagArgs, pos := splitArgs(args, map[string]bool{})
+	if err := fs.Parse(flagArgs); err != nil {
+		return 2
+	}
+	if len(pos) != 2 {
+		fmt.Fprint(os.Stderr, taskUsage)
+		return 2
+	}
+	abs, err := filepath.Abs(pos[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "错误：%v\n", err)
+		return 2
+	}
+	st, err := o.open()
+	if err != nil {
+		return hotUnreachable(err)
+	}
+	defer st.Close()
+
+	var refList []string
+	for _, r := range strings.Split(*refs, ",") {
+		if s := strings.TrimSpace(r); s != "" {
+			refList = append(refList, s)
+		}
+	}
+	res, err := settleTask(st, abs, pos[1], taskSettleOpts{
+		By: *by, Title: *title, Status: *status, Kind: *kind, Note: *note, Refs: refList,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "结账没成：%v\n", err)
+		return 1
+	}
+	if res.Already {
+		fmt.Println("anc task settle —— 已经在 timeline 里，本次不重复写")
+		fmt.Printf("  case %s · status=%s · at=%s\n", res.Entry.Case, dashIfEmpty(res.Entry.Status), dashIfEmpty(res.Entry.At))
+		if res.Task.ID != "" {
+			fmt.Printf("  热层     %s 已清走\n", res.Task.ID)
+		}
+		return 0
+	}
+	fmt.Println("anc task settle —— 先落库，再清热层")
+	fmt.Printf("  %s %s\n", bandDot(timeline.Band(res.Entry.Status)), titleLine(res.Entry))
+	fmt.Printf("  落库     %s\n", relTo(abs, res.Path))
+	fmt.Printf("  这一条   id=%s kind=%s status=%s by=%s\n",
+		res.Entry.ID, dashIfEmpty(res.Entry.Kind), dashIfEmpty(res.Entry.Status), dashIfEmpty(res.Entry.By))
+	fmt.Printf("  热层     %s 已清走（进行中 → 历史）\n", res.Task.ID)
 	return 0
 }
 
