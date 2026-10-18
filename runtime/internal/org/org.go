@@ -339,105 +339,16 @@ func Load(root string) (*Org, error) {
 		allowedSection[s] = true
 	}
 
-	roleDirs, err := subdirs(filepath.Join(root, "roles"))
+	roles, roleIssues, err := loadRoles(root, sections, pol)
 	if err != nil {
 		return nil, err
 	}
-	for _, name := range roleDirs {
-		d, err := readDoc(filepath.Join(root, "roles", name, "persona.md"))
-		if err != nil {
-			return nil, err
-		}
-		r := Role{Role: name, Sections: map[string]string{}}
-		if v, err := d.Str("role"); err != nil {
-			return nil, err
-		} else if v != "" {
-			r.Role = v
-		}
-		if r.Title, err = d.Str("title"); err != nil {
-			return nil, err
-		}
-		if r.Model, err = d.Str("model"); err != nil {
-			return nil, err
-		}
-		if r.Mode, err = d.Str("mode"); err != nil {
-			return nil, err
-		}
-		if r.AllowedTools, err = d.StrList("allowed_tools"); err != nil {
-			return nil, err
-		}
-		if r.VaultScope, err = d.StrList("vault_scope"); err != nil {
-			return nil, err
-		}
-		if r.Skills, err = d.StrList("skills"); err != nil {
-			return nil, err
-		}
-		r.Sections = map[string]string{}
-		for _, s := range splitH2(d.Body) {
-			if allowedSection[s.Name] {
-				r.Sections[s.Name] = s.Text
-				continue
-			}
-			polIssues = append(polIssues, pol.Issue("role.persona.section_unknown",
-				"roles/"+name+"/persona.md",
-				"正文出现未约定的 H2 段「%s」；白名单是 %s —— 角色层不许私藏事实（canonical registry 纪律）。要放行就在 company.md 写 persona_sections，或在 policy 段把本规则降到 warn/off",
-				s.Name, strings.Join(sections, " / ")))
-			r.Extra = append(r.Extra, s)
-		}
-		o.Roles[r.Role] = r
-	}
+	o.Roles = roles
+	polIssues = append(polIssues, roleIssues...)
 
-	memberDirs, err := subdirs(filepath.Join(root, "members"))
-	if err != nil {
+	if o.Members, err = loadMembers(root); err != nil {
 		return nil, err
 	}
-	for _, dir := range memberDirs {
-		d, err := readDoc(filepath.Join(root, "members", dir, "persona.md"))
-		if err != nil {
-			return nil, err
-		}
-		m := Member{Name: dir, Body: d.Body}
-		if v, err := d.Str("name"); err != nil {
-			return nil, err
-		} else if v != "" {
-			m.Name = v
-		}
-		if m.DisplayName, err = d.Str("display_name"); err != nil {
-			return nil, err
-		}
-		if m.Role, err = d.Str("role"); err != nil {
-			return nil, err
-		}
-		if m.Model, err = d.Str("model"); err != nil {
-			return nil, err
-		}
-		if m.Admin, err = d.Bool("admin"); err != nil {
-			return nil, err
-		}
-		if m.Unwired, err = d.Bool("unwired"); err != nil {
-			return nil, err
-		}
-		if m.Disabled, err = d.Bool("disabled"); err != nil {
-			return nil, err
-		}
-		if m.Domains, err = d.StrList("domains"); err != nil {
-			return nil, err
-		}
-		if m.Feishu.AppID, err = d.Str("feishu.app_id"); err != nil {
-			return nil, err
-		}
-		if m.Feishu.OpenID, err = d.Str("feishu.open_id"); err != nil {
-			return nil, err
-		}
-		if m.Feishu.ExtraAllowFrom, err = d.StrList("feishu.extra_allow_from"); err != nil {
-			return nil, err
-		}
-		if m.Feishu.AllowChat, err = d.StrList("feishu.allow_chat"); err != nil {
-			return nil, err
-		}
-		o.Members = append(o.Members, m)
-	}
-	sort.Slice(o.Members, func(i, j int) bool { return o.Members[i].Name < o.Members[j].Name })
 
 	if o.Routing, err = scanRouting(root); err != nil {
 		return nil, err
@@ -493,6 +404,124 @@ func Load(root string) (*Org, error) {
 	}
 	o.Warnings = rep.Warns()
 	return o, nil
+}
+
+// loadRoles 读 roles/<名>/persona.md，返回角色表与「正文私藏未约定 H2 段」的问题。
+//
+// 角色层不许私藏事实（canonical registry 纪律）：正文只认 company.md 的 persona_sections
+// 白名单里的段，其余记进 Extra 并报 role.persona.section_unknown。
+func loadRoles(root string, sections []string, pol *Policy) (map[string]Role, []Issue, error) {
+	allowedSection := make(map[string]bool, len(sections))
+	for _, s := range sections {
+		allowedSection[s] = true
+	}
+	dirs, err := subdirs(filepath.Join(root, "roles"))
+	if err != nil {
+		return nil, nil, err
+	}
+	roles := make(map[string]Role, len(dirs))
+	var issues []Issue
+	for _, name := range dirs {
+		d, err := readDoc(filepath.Join(root, "roles", name, "persona.md"))
+		if err != nil {
+			return nil, nil, err
+		}
+		r := Role{Role: name, Sections: map[string]string{}}
+		if v, err := d.Str("role"); err != nil {
+			return nil, nil, err
+		} else if v != "" {
+			r.Role = v
+		}
+		if r.Title, err = d.Str("title"); err != nil {
+			return nil, nil, err
+		}
+		if r.Model, err = d.Str("model"); err != nil {
+			return nil, nil, err
+		}
+		if r.Mode, err = d.Str("mode"); err != nil {
+			return nil, nil, err
+		}
+		if r.AllowedTools, err = d.StrList("allowed_tools"); err != nil {
+			return nil, nil, err
+		}
+		if r.VaultScope, err = d.StrList("vault_scope"); err != nil {
+			return nil, nil, err
+		}
+		if r.Skills, err = d.StrList("skills"); err != nil {
+			return nil, nil, err
+		}
+		for _, s := range splitH2(d.Body) {
+			if allowedSection[s.Name] {
+				r.Sections[s.Name] = s.Text
+				continue
+			}
+			issues = append(issues, pol.Issue("role.persona.section_unknown",
+				"roles/"+name+"/persona.md",
+				"正文出现未约定的 H2 段「%s」；白名单是 %s —— 角色层不许私藏事实（canonical registry 纪律）。要放行就在 company.md 写 persona_sections，或在 policy 段把本规则降到 warn/off",
+				s.Name, strings.Join(sections, " / ")))
+			r.Extra = append(r.Extra, s)
+		}
+		roles[r.Role] = r
+	}
+	return roles, issues, nil
+}
+
+// loadMembers 读 members/<目录>/persona.md。目录名是成员的物理 id；frontmatter 的 name
+// 可以覆盖它（改名不改目录），返回值按 name 排序，保证每次加载顺序一致。
+func loadMembers(root string) ([]Member, error) {
+	dirs, err := subdirs(filepath.Join(root, "members"))
+	if err != nil {
+		return nil, err
+	}
+	var out []Member
+	for _, dir := range dirs {
+		d, err := readDoc(filepath.Join(root, "members", dir, "persona.md"))
+		if err != nil {
+			return nil, err
+		}
+		m := Member{Name: dir, Body: d.Body}
+		if v, err := d.Str("name"); err != nil {
+			return nil, err
+		} else if v != "" {
+			m.Name = v
+		}
+		if m.DisplayName, err = d.Str("display_name"); err != nil {
+			return nil, err
+		}
+		if m.Role, err = d.Str("role"); err != nil {
+			return nil, err
+		}
+		if m.Model, err = d.Str("model"); err != nil {
+			return nil, err
+		}
+		if m.Admin, err = d.Bool("admin"); err != nil {
+			return nil, err
+		}
+		if m.Unwired, err = d.Bool("unwired"); err != nil {
+			return nil, err
+		}
+		if m.Disabled, err = d.Bool("disabled"); err != nil {
+			return nil, err
+		}
+		if m.Domains, err = d.StrList("domains"); err != nil {
+			return nil, err
+		}
+		if m.Feishu.AppID, err = d.Str("feishu.app_id"); err != nil {
+			return nil, err
+		}
+		if m.Feishu.OpenID, err = d.Str("feishu.open_id"); err != nil {
+			return nil, err
+		}
+		if m.Feishu.ExtraAllowFrom, err = d.StrList("feishu.extra_allow_from"); err != nil {
+			return nil, err
+		}
+		if m.Feishu.AllowChat, err = d.StrList("feishu.allow_chat"); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
 }
 
 // Enabled 返回启用中的成员（disabled = 离职停用而不删档）。
