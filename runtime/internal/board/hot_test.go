@@ -130,6 +130,64 @@ func TestHotFieldNamesAreContract(t *testing.T) {
 	}
 }
 
+// 交接 / 验收要能被看板看见：跨域与自验都靠这两块对象里的标记。
+func TestHotExposesHandoffAndReview(t *testing.T) {
+	st := sampleState(t)
+	st.Hop, st.MaxHop, st.Accept = 2, 6, "抽检 200 通"
+	st.Refs = []string{"doc-1"}
+	st.Handoff = hot.Handoff{From: "alice", To: "bob", Note: "换手", CrossDomain: true, At: st.AsOf}
+	st.Review = hot.Review{By: "lead", Verdict: hot.VerdictPending, Note: "待看", At: st.AsOf, Self: true}
+	v, body := hotOf(t, &Server{Hot: &fakeHot{list: []hot.State{st}}, Now: func() time.Time { return sampleNow }})
+	if len(v.Entries) != 1 {
+		t.Fatalf("应当回显 1 条，实际 %s", body)
+	}
+	e := v.Entries[0]
+	if e.Handoff == nil || !e.Handoff.CrossDomain || e.Handoff.From != "alice" {
+		t.Fatalf("交接信息没端出来：%+v", e.Handoff)
+	}
+	if e.Review == nil || !e.Review.Self || e.Review.Verdict != hot.VerdictPending {
+		t.Fatalf("验收信息没端出来：%+v", e.Review)
+	}
+	if e.Hop != 2 || e.MaxHop != 6 || e.Accept == "" || len(e.Refs) != 1 {
+		t.Fatalf("交接字段没端出来：%+v", e)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(body), &raw); err != nil {
+		t.Fatal(err)
+	}
+	entry := raw["entries"].([]any)[0].(map[string]any)
+	for _, k := range []string{"hop", "max_hop", "accept", "refs", "handoff", "review"} {
+		if _, ok := entry[k]; !ok {
+			t.Fatalf("契约里少了 %q：%s", k, body)
+		}
+	}
+}
+
+func TestHotMarksOverdueAndCountsActionable(t *testing.T) {
+	late := sampleNow.Add(-2 * time.Hour).Format(time.RFC3339)
+	f := &fakeHot{list: []hot.State{
+		{ID: "t-late", Stage: hot.StageRunning, Status: "running", Title: "超期", To: "alice", DueAt: late, AsOf: sampleNow.Format(time.RFC3339)},
+		{ID: "t-blocked", Stage: hot.StageBlocked, Status: "blocked", Title: "卡住", To: "bob", AsOf: sampleNow.Format(time.RFC3339)},
+		{ID: "t-review", Stage: hot.StageReview, Status: "review", Title: "等验收", To: "carol",
+			Review: hot.Review{By: "carol", Verdict: hot.VerdictPending}, AsOf: sampleNow.Format(time.RFC3339)},
+		{ID: "t-done", Stage: hot.StageDone, Status: "done", Title: "完成", DueAt: late, AsOf: sampleNow.Format(time.RFC3339)},
+	}}
+	v, body := hotOf(t, &Server{Hot: f, Now: func() time.Time { return sampleNow }})
+	if v.Overdue != 1 || v.Blocked != 1 || v.Review != 1 || v.Actionable != 3 {
+		t.Fatalf("异常计数不对：overdue=%d blocked=%d review=%d actionable=%d：%s",
+			v.Overdue, v.Blocked, v.Review, v.Actionable, body)
+	}
+	var lateRow *HotEntryView
+	for i := range v.Entries {
+		if v.Entries[i].ID == "t-late" {
+			lateRow = &v.Entries[i]
+		}
+	}
+	if lateRow == nil || !lateRow.Overdue || lateRow.OverdueSecs == nil || *lateRow.OverdueSecs != 7200 {
+		t.Fatalf("超期条目没标出来：%+v", lateRow)
+	}
+}
+
 var sampleNow = time.Date(2026, 10, 12, 10, 0, 0, 0, time.UTC)
 
 func sampleState(t *testing.T) hot.State {

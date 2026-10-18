@@ -1,0 +1,13 @@
+/* 样式入口：顺序就是层叠顺序，不要随手调换。
+   tokens   设计变量与基础元素
+   layout   应用骨架（侧栏、主区、页头）
+   components  状态灯、卡片、表格、表单
+   features 仪表盘、沉淀柱、抽屉、提示
+   shell     v2 外壳（当前使用的那一套）
+   theme-light  浅色主题覆盖（必须最后） */
+@import "./tokens.css";
+@import "./layout.css";
+@import "./components.css";
+@import "./features.css";
+@import "./shell.css";
+@import "./theme-light.css";

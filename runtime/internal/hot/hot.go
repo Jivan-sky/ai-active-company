@@ -22,6 +22,7 @@
 package hot
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -48,26 +49,90 @@ const (
 	// 它防的是「agent 拿到任务后失联，任务永远锁在它手里」；到期不抢、不删，
 	// 只是下一次 pull 可以再认领（同 Claim 的口径）。
 	DefaultTaskLease = 10 * time.Minute
+	// DefaultTaskMaxAttempt 是「同一件事失联几次后不再自动回队列」。
+	// 超过这个次数就进 blocked，等人接手；不是删除，也不是判失败。
+	DefaultTaskMaxAttempt = 3
+	// DefaultTaskMaxHop 是「一件事最多交接几次」的默认上限。
+	// 超过就进 blocked 等人接手 —— 交接成环比交接失败更贵。
+	DefaultTaskMaxHop = 6
 )
+
+// stage 是**协议阶段**，不是业务状态。业务词仍放 Status：
+// stage 只回答「这件事在流程的哪一步」，status 回答「业务上现在什么样」。
+// 两者拆开，机制才不会因为客户换了一个业务词就失灵。
+const (
+	StageQueued    = "queued"
+	StageRunning   = "running"
+	StageReview    = "review"
+	StageBlocked   = "blocked"
+	StageDone      = "done"
+	StageCancelled = "cancelled"
+)
+
+// 验收结论只认三种：还没判、接受、驳回。
+const (
+	VerdictPending  = "pending"
+	VerdictAccepted = "accepted"
+	VerdictRejected = "rejected"
+)
+
+// Handoff 是一次交接的当前值（历史仍在 timeline / audit 里，不在这里堆）。
+type Handoff struct {
+	From        string   `json:"from"`
+	To          string   `json:"to"`
+	Note        string   `json:"note,omitempty"`
+	Refs        []string `json:"refs,omitempty"`
+	CrossDomain bool     `json:"cross_domain,omitempty"`
+	At          string   `json:"at"`
+}
+
+// Review 是验收的当前值。By 是验收人；Self 表示验收人就是提交人 ——
+// 只告警，不拦：这是 v1 拍板的口径。
+type Review struct {
+	By      string `json:"by"`
+	Verdict string `json:"verdict"`
+	Note    string `json:"note,omitempty"`
+	At      string `json:"at"`
+	Self    bool   `json:"self,omitempty"`
+}
 
 // State 是「一件进行中的事」的当前态。
 //
 // 字段全是数据：加字段不用迁移，老条目没这一项就是空。
 type State struct {
 	ID      string // 用的是 timeline 的 case id —— 一份 id 贯穿热层与真相源
-	Status  string // 沿用 timeline 的档位词：done / running / blocked / failed（认不出的照收）
-	By      string // 谁在做（pull 时改成本人）
-	From    string // 谁派的（入队时钉住，之后不再改）
-	To      string // 下一手该交给谁
-	Domain  string
-	Project string
-	Title   string
-	Note    string
-	AsOf    string // RFC3339：这个当前值是「什么时候的」—— 新鲜度靠它，不靠 TTL
-	Session string // 这条任务属于哪个会话（空 = 沿用 agent 当前会话）
-	Intent  string // queue / interrupt / new_session …（认不出的照收；ANC 只转达，不执行）
-	Version int64  // 每次任务状态变化 +1；客户端据此判断「拿到的是不是最新的一条」
-	LeaseTo string // RFC3339：认领租约到期时刻（**派生值，不落库**；空 = 没租约）
+	Status  string // 业务状态词：done / running / blocked / failed / waiting_customer …（认不出的照收）
+	Stage   string // 协议阶段：queued / running / review / blocked / done / cancelled
+	Fence   int64  // 当前认领的围栏号；每次 claim / reap +1，旧持有者的写入会被拒
+	Attempt int    // 失联回收次数（只由 reap 增加）
+	// MaxAttempt 是「失联几次后不再自动回队列」；0 = 用 DefaultTaskMaxAttempt。
+	MaxAttempt int
+	By         string // 谁在做（pull 时改成本人）
+	From       string // 谁派的（入队时钉住，之后不再改）
+	To         string // 下一手该交给谁
+	Domain     string
+	Project    string
+	Title      string
+	Note       string
+	Root       string // 根 case；入队时默认 = ID，交接不换根
+	Parent     string // 父工作项（可选；空 = 没有父项）
+	Accept     string // 验收口径（自由文本；由业务决定，不做结构化字段）
+	DueAt      string // 截止时刻（RFC3339；空 = 没定截止）
+	Priority   string // 优先级（自由文本；空 = 未知；热层不猜大小）
+	Hop        int    // 交接次数（只由 handoff 增加）
+	// MaxHop 是「最多交接几次」；0 = DefaultTaskMaxHop。
+	MaxHop  int
+	Refs    []string // 证据 / 引用（自由文本）
+	Handoff Handoff  // 最近一次交接；零值 = 没交接过
+	Review  Review   // 最近一次验收；零值 = 没提交过验收
+	AsOf    string   // RFC3339：这个当前值是「什么时候的」—— 新鲜度靠它，不靠 TTL
+	Session string   // 这条任务属于哪个会话（空 = 沿用 agent 当前会话）
+	Intent  string   // queue / interrupt / new_session …（认不出的照收；ANC 只转达，不执行）
+	Version int64    // 每次任务状态变化 +1；客户端据此判断「拿到的是不是最新的一条」
+	LeaseTo string   // RFC3339：认领租约到期时刻（**派生值，不落库**；空 = 没租约）
+	// LeaseNoExpiry 是派生值：租约没有到期时间（claim 时 lease <= 0）。
+	// 没有它，`LeaseTo` 为空会被误读成「租约过期」，reap 就会把一条永不过期的任务抢回来。
+	LeaseNoExpiry bool
 }
 
 // Fields 转成热层里那份 hash。
@@ -75,19 +140,33 @@ type State struct {
 // 一个删不掉的旧值 —— 那种脏数据最难查。
 func (s State) Fields() map[string]string {
 	return map[string]string{
-		"id":      s.ID,
-		"status":  s.Status,
-		"by":      s.By,
-		"from":    s.From,
-		"to":      s.To,
-		"domain":  s.Domain,
-		"project": s.Project,
-		"title":   s.Title,
-		"note":    s.Note,
-		"as_of":   s.AsOf,
-		"session": s.Session,
-		"intent":  s.Intent,
-		"version": strconv.FormatInt(s.Version, 10),
+		"id":          s.ID,
+		"status":      s.Status,
+		"stage":       s.Stage,
+		"fence":       strconv.FormatInt(s.Fence, 10),
+		"attempt":     strconv.Itoa(s.Attempt),
+		"max_attempt": strconv.Itoa(s.MaxAttempt),
+		"by":          s.By,
+		"from":        s.From,
+		"to":          s.To,
+		"domain":      s.Domain,
+		"project":     s.Project,
+		"title":       s.Title,
+		"note":        s.Note,
+		"root":        s.Root,
+		"parent":      s.Parent,
+		"accept":      s.Accept,
+		"due_at":      s.DueAt,
+		"priority":    s.Priority,
+		"hop":         strconv.Itoa(s.Hop),
+		"max_hop":     strconv.Itoa(s.MaxHop),
+		"refs":        refsJSON(s.Refs),
+		"handoff":     handoffJSON(s.Handoff),
+		"review":      reviewJSON(s.Review),
+		"as_of":       s.AsOf,
+		"session":     s.Session,
+		"intent":      s.Intent,
+		"version":     strconv.FormatInt(s.Version, 10),
 	}
 }
 
@@ -95,21 +174,142 @@ func (s State) Fields() map[string]string {
 // 热层里多一个别人写的字段，不该让这里读不出东西。
 func StateFromFields(m map[string]string) State {
 	version, _ := strconv.ParseInt(strings.TrimSpace(m["version"]), 10, 64)
-	return State{
-		ID:      m["id"],
-		Status:  m["status"],
-		By:      m["by"],
-		From:    m["from"],
-		To:      m["to"],
-		Domain:  m["domain"],
-		Project: m["project"],
-		Title:   m["title"],
-		Note:    m["note"],
-		AsOf:    m["as_of"],
-		Session: m["session"],
-		Intent:  m["intent"],
-		Version: version,
+	fence, _ := strconv.ParseInt(strings.TrimSpace(m["fence"]), 10, 64)
+	attempt, _ := strconv.Atoi(strings.TrimSpace(m["attempt"]))
+	maxAttempt, _ := strconv.Atoi(strings.TrimSpace(m["max_attempt"]))
+	hop, _ := strconv.Atoi(strings.TrimSpace(m["hop"]))
+	maxHop, _ := strconv.Atoi(strings.TrimSpace(m["max_hop"]))
+	stage := strings.TrimSpace(m["stage"])
+	if stage == "" {
+		stage = DeriveStage(m["status"])
 	}
+	root := strings.TrimSpace(m["root"])
+	if root == "" {
+		root = m["id"]
+	}
+	return State{
+		ID:         m["id"],
+		Status:     m["status"],
+		Stage:      stage,
+		Fence:      fence,
+		Attempt:    attempt,
+		MaxAttempt: maxAttempt,
+		By:         m["by"],
+		From:       m["from"],
+		To:         m["to"],
+		Domain:     m["domain"],
+		Project:    m["project"],
+		Title:      m["title"],
+		Note:       m["note"],
+		Root:       root,
+		Parent:     m["parent"],
+		Accept:     m["accept"],
+		DueAt:      m["due_at"],
+		Priority:   m["priority"],
+		Hop:        hop,
+		MaxHop:     maxHop,
+		Refs:       refsFromJSON(m["refs"]),
+		Handoff:    handoffFromJSON(m["handoff"]),
+		Review:     reviewFromJSON(m["review"]),
+		AsOf:       m["as_of"],
+		Session:    m["session"],
+		Intent:     m["intent"],
+		Version:    version,
+	}
+}
+
+func refsJSON(refs []string) string {
+	if len(refs) == 0 {
+		return ""
+	}
+	b, _ := json.Marshal(refs)
+	return string(b)
+}
+
+func refsFromJSON(s string) []string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	var out []string
+	if err := json.Unmarshal([]byte(s), &out); err != nil {
+		return nil
+	}
+	return out
+}
+
+func handoffJSON(h Handoff) string {
+	if h.From == "" && h.To == "" && h.Note == "" && h.At == "" && len(h.Refs) == 0 && !h.CrossDomain {
+		return ""
+	}
+	b, _ := json.Marshal(h)
+	return string(b)
+}
+
+func handoffFromJSON(s string) Handoff {
+	var h Handoff
+	if strings.TrimSpace(s) == "" {
+		return h
+	}
+	_ = json.Unmarshal([]byte(s), &h)
+	return h
+}
+
+func reviewJSON(r Review) string {
+	if r.By == "" && r.Verdict == "" && r.Note == "" && r.At == "" && !r.Self {
+		return ""
+	}
+	b, _ := json.Marshal(r)
+	return string(b)
+}
+
+func reviewFromJSON(s string) Review {
+	var r Review
+	if strings.TrimSpace(s) == "" {
+		return r
+	}
+	_ = json.Unmarshal([]byte(s), &r)
+	return r
+}
+
+// DeriveStage 把旧数据 / 只在 status 里写词的调用方，折成协议阶段。
+// 认不出的业务词回空 —— 空不等于 queued，调用方必须自己决定要不要处理。
+func DeriveStage(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case StageQueued:
+		return StageQueued
+	case StageRunning:
+		return StageRunning
+	case StageReview:
+		return StageReview
+	case StageBlocked:
+		return StageBlocked
+	case StageDone, "failed":
+		return StageDone
+	case StageCancelled:
+		return StageCancelled
+	}
+	return ""
+}
+
+// StageForStatus 是「回执写了一个业务词之后，协议阶段该走到哪」。
+// 认不出的词不动阶段：业务可以加词，机制不跟着猜。
+func StageForStatus(status, current string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case StageQueued:
+		return StageQueued
+	case StageRunning:
+		return StageRunning
+	case StageReview:
+		return StageReview
+	case StageBlocked:
+		return StageBlocked
+	case StageDone, "failed":
+		return StageDone
+	case StageCancelled:
+		return StageCancelled
+	}
+	return current
 }
 
 // Time 解析 AsOf。读不懂返回 false —— 调用方据此说「时间读不懂」，
@@ -120,6 +320,36 @@ func (s State) Time() (time.Time, bool) {
 		return time.Time{}, false
 	}
 	return t, true
+}
+
+// Due 解析截止时刻。空、或者读不懂，都返回 false —— 调用方据此说「没定截止」
+// 或「截止时间读不懂」，而不是把它当成「已经到期」。
+func (s State) Due() (time.Time, bool) {
+	t, err := time.Parse(time.RFC3339, strings.TrimSpace(s.DueAt))
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t, true
+}
+
+// Overdue 只回答「现在是不是该催了」。终态（done / cancelled）不算超期：
+// 那是「有没有晚交」的另一个问题，不该混进异常条。
+// **只打标，不改 stage、不升级、不通知** —— 通知是 outbox 那一刀的显式动作。
+func (s State) Overdue(now time.Time) bool {
+	if s.Stage == StageDone || s.Stage == StageCancelled {
+		return false
+	}
+	due, ok := s.Due()
+	return ok && now.After(due)
+}
+
+// OverdueFor 给出「超了多久」。没超期 / 没定截止 / 读不懂都返回 false。
+func (s State) OverdueFor(now time.Time) (time.Duration, bool) {
+	if !s.Overdue(now) {
+		return 0, false
+	}
+	due, _ := s.Due()
+	return now.Sub(due), true
 }
 
 // Stale 是新鲜度判据：超过 after 没动过 = 不新鲜。after <= 0 = 不判（永远算新鲜）。
@@ -137,6 +367,9 @@ func (s State) Stale(now time.Time, after time.Duration) bool {
 
 // LeaseHeld 报租约还在不在。空、或者读不懂，都算没有有效租约。
 func (s State) LeaseHeld(now time.Time) bool {
+	if s.LeaseNoExpiry {
+		return true
+	}
 	t, err := time.Parse(time.RFC3339, strings.TrimSpace(s.LeaseTo))
 	return err == nil && t.After(now)
 }
@@ -149,6 +382,13 @@ func TaskKey(prefix, id string) string { return prefix + ":task:" + id }
 // 每处都得分一次「这条是不是租约」，迟早漏一处。
 func LeaseKey(prefix, id string) string { return prefix + ":lease:" + id }
 
+// FenceKey 是认领围栏的单调计数器。每次 claim / reap 都 INCR，
+// 旧持有者拿着旧 fence 回来写，会被直接拒掉。
+func FenceKey(prefix, id string) string { return prefix + ":fence:" + id }
+
+// ReapLockKey 是回收那一刀的短锁：两个进程同时 reap，同一条只该被处理一次。
+func ReapLockKey(prefix, id string) string { return prefix + ":lock:reap:" + id }
+
 func scanPattern(prefix string) string { return prefix + ":task:*" }
 
 // ErrNotFound：热层里没有这件事。它**不是错误状态**：可能只是已经达标清走了。
@@ -158,6 +398,30 @@ var ErrNotFound = errors.New("hot: 热层里没有这一条")
 type ErrOccupied struct {
 	ID    string
 	Owner string
+}
+
+// ErrVersion：写之前读到的 version 已经不是当前值 —— 有人先写了一刀。
+// 这不是「坏数据」，是两个写者撞上了；调用方该重读，而不是盲写。
+type ErrVersion struct {
+	ID   string
+	Want int64
+	Got  int64
+}
+
+func (e *ErrVersion) Error() string {
+	return fmt.Sprintf("hot: %s 的版本对不上（读到 %d，当前 %d）—— 有人先写过，重读再决定", e.ID, e.Want, e.Got)
+}
+
+// ErrStage：这条已经不在调用方以为的阶段了（典型：pull 拿着旧列表去认领，
+// 期间任务已经 done）。不是错误状态，是「这一手不该再接」。
+type ErrStage struct {
+	ID   string
+	Want string
+	Got  string
+}
+
+func (e *ErrStage) Error() string {
+	return fmt.Sprintf("hot: %s 现在在 %q 阶段，不在 %q —— 不再认领", e.ID, e.Got, e.Want)
 }
 
 func (e *ErrOccupied) Error() string {

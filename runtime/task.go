@@ -22,11 +22,22 @@ const taskUsage = `anc task —— 拉取式任务队列（ANC 只入队，agent
   anc task add <vault> --to <agent> --title <一句话> [--id <id>] [--by <谁>]
                        [--note <正文>] [--domain <域>] [--project <项目>]
                        [--session <会话>] [--intent queue|interrupt|new_session]
+                       [--root <根 case>] [--parent <父工作项>] [--accept <验收口径>]
+                       [--due <RFC3339>] [--priority <词>]
+                       [--refs a,b] [--max-attempts <n>] [--max-hop <n>]
   anc task pull <vault> --who <agent> [--limit 1] [--lease 10m] [--json]
-  anc task ack <vault> <id> --who <agent> --status done [--note <回执>]
+  anc task ack <vault> <id> --who <agent> --status done [--fence <n>] [--note <回执>]
+  anc task handoff <vault> <id> --who <agent> --to <agent> --fence <n> --note <为什么> [--refs a,b]
+  anc task submit <vault> <id> --who <agent> --reviewer <agent|成员> --fence <n>
+                                [--accept <验收口径>] [--note <说明>] [--refs a,b]
+  anc task verify <vault> <id> --who <验收人> --verdict accepted|rejected [--note <意见>]
+  anc task escalate <vault> <id> --who <agent> --to <agent|成员> [--fence <n>] --note <卡点>
+  anc task notify <vault> [--data <目录>] [--send] [--limit 50] [--json]
+  anc task reap <vault> [--json]
   anc task settle <vault> <id> [--by <谁>] [--status <终态>] [--title <一句话>]
                                 [--note <结账说明>] [--kind execution] [--refs a,b]
-  anc task ls <vault> [--who <agent>] [--status queued|running|done] [--limit 50] [--json]
+  anc task ls <vault> [--who <agent>] [--stage queued|running|review|blocked|done] [--status <业务词>]
+                     [--overdue] [--limit 50] [--json]
 
 配置：
   --addr / --prefix   热层地址与 key 前缀（也可用 ANC_HOT_ADDR / ANC_HOT_PREFIX）
@@ -36,7 +47,17 @@ const taskUsage = `anc task —— 拉取式任务队列（ANC 只入队，agent
   · **ANC 不 push、不杀会话**：入队只是把事写进队列；agent 下次 pull 才看到。
   · intent=interrupt 是**请求**，是否打断当前回合由 agent 自己决定。
   · pull 原子认领（SET NX）；两个 agent 同时拉，同一条只落到一个手里。
+  · 每次 pull 发一个围栏号（fence）；回执时带上它，旧持有者就写不进来。
+  · 租约过期不会被删：下一次 pull 先 reap，回队列并 attempt+1；超过 max_attempt 才进 blocked。
   · 回执只有被派的人能写；done 先留在热层，等 settle 那一步再清走。
+  · handoff 不是重新派单：root / from / refs 保留，只换下一手；超过 max_hop 进 blocked。
+  · submit 必须有验收口径；submit 后放开租约，review 阶段不会被 pull 走。
+  · verify 只认提交时写的验收人；accepted → done，rejected → 回作者队列（理由必填）。
+  · escalate 把卡点交给具体的人，结果进 blocked；running 中升级必须带 fence。
+  · 跨域 handoff / escalate 默认放行，但会写 audit 并在看板标出 —— v1 不硬拦。
+  · due_at 是事实，不是门禁：超期只打标，不改 stage、不自动升级。
+  · task notify 只发三类要人动手的事：超期 / 卡住 / 待验收；默认 dry-run，--send 才落箱并送。
+  · 发件箱 append-only + 事件 id 去重；送一条推进一条游标，失败的下一轮重放。
   · settle = 先落库、再清热层；queued / running 默认不结账（要终止就显式给 status）。
   · settle 幂等：timeline 里已有同 case 的行就不再追加。
 `
@@ -53,6 +74,18 @@ func cmdTask(args []string) int {
 		return cmdTaskPull(args[1:])
 	case "ack":
 		return cmdTaskAck(args[1:])
+	case "handoff":
+		return cmdTaskHandoff(args[1:])
+	case "submit":
+		return cmdTaskSubmit(args[1:])
+	case "verify":
+		return cmdTaskVerify(args[1:])
+	case "escalate":
+		return cmdTaskEscalate(args[1:])
+	case "notify":
+		return cmdTaskNotify(args[1:])
+	case "reap":
+		return cmdTaskReap(args[1:])
 	case "settle":
 		return cmdTaskSettle(args[1:])
 	case "ls", "list":
@@ -100,6 +133,14 @@ func cmdTaskAdd(args []string) int {
 	project := fs.String("project", "", "项目 slug")
 	session := fs.String("session", "", "会话 id（可选）")
 	intent := fs.String("intent", "queue", "queue / interrupt / new_session")
+	root := fs.String("root", "", "根 case id（默认 = 任务 id）")
+	parent := fs.String("parent", "", "父工作项 id（可选）")
+	accept := fs.String("accept", "", "验收口径（自由文本，由业务决定）")
+	due := fs.String("due", "", "截止时刻（RFC3339，例如 2026-10-20T18:00:00+08:00）")
+	priority := fs.String("priority", "", "优先级（自由文本；热层不猜大小）")
+	refs := fs.String("refs", "", "证据 / 引用，逗号分隔")
+	maxAttempts := fs.Int("max-attempts", 0, "失联几次后不再自动回队列（默认 "+fmt.Sprint(hot.DefaultTaskMaxAttempt)+"）")
+	maxHop := fs.Int("max-hop", 0, "最多交接几次（默认 "+fmt.Sprint(hot.DefaultTaskMaxHop)+"）")
 	flagArgs, posArgs := splitArgs(args, map[string]bool{})
 	if err := fs.Parse(flagArgs); err != nil {
 		return 2
@@ -135,6 +176,9 @@ func cmdTaskAdd(args []string) int {
 	saved, err := st.EnqueueTask(hot.TaskSpec{
 		ID: tid, To: a.Slug, By: *by, Title: *title, Note: *note,
 		Domain: *domain, Project: *project, Session: *session, Intent: *intent,
+		Root: *root, Parent: *parent, Accept: *accept, DueAt: *due, Priority: *priority,
+		Refs:       splitList(*refs),
+		MaxAttempt: *maxAttempts, MaxHop: *maxHop,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "任务没入队：%v\n", err)
@@ -201,10 +245,62 @@ func cmdTaskPull(args []string) int {
 	}
 	fmt.Printf("%s 拉走 %d 条：\n", a.Slug, len(tasks))
 	for _, t := range tasks {
-		fmt.Printf("  %-20s %s  v%d\n", t.ID, t.Title, t.Version)
+		fmt.Printf("  %-20s %-8s %s  v%d fence=%d\n", t.ID, t.Stage, t.Title, t.Version, t.Fence)
 		if t.Note != "" {
 			fmt.Printf("    %s\n", t.Note)
 		}
+	}
+	return 0
+}
+
+func cmdTaskReap(args []string) int {
+	fs := flag.NewFlagSet("task reap", flag.ContinueOnError)
+	o := addTaskOpts(fs)
+	asJSON := fs.Bool("json", false, "出 JSON（默认人读）")
+	flagArgs, posArgs := splitArgs(args, map[string]bool{"json": true})
+	if err := fs.Parse(flagArgs); err != nil {
+		return 2
+	}
+	if len(posArgs) != 1 {
+		fmt.Fprint(os.Stderr, taskUsage)
+		return 2
+	}
+	st, err := o.open()
+	if err != nil {
+		return hotUnreachable(err)
+	}
+	defer st.Close()
+	rep, err := st.ReapExpired(st.Now())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "回收没成：%v\n", err)
+		return 1
+	}
+	if *asJSON {
+		rows := func(list []hot.State) []map[string]any {
+			out := make([]map[string]any, 0, len(list))
+			for _, t := range list {
+				out = append(out, taskMap(t, ""))
+			}
+			return out
+		}
+		printJSON(map[string]any{
+			"ok": true, "requeued": rows(rep.Requeued), "escalated": rows(rep.Escalated),
+			"skipped": rep.Skipped, "count": len(rep.Requeued) + len(rep.Escalated),
+		})
+		return 0
+	}
+	if len(rep.Requeued) == 0 && len(rep.Escalated) == 0 {
+		fmt.Println("没有过期租约需要回收。")
+		return 0
+	}
+	for _, t := range rep.Requeued {
+		fmt.Printf("  回队列  %-20s attempt=%d fence=%d  %s\n", t.ID, t.Attempt, t.Fence, t.Title)
+	}
+	for _, t := range rep.Escalated {
+		fmt.Printf("  升级    %-20s attempt=%d fence=%d  %s（等人接手）\n", t.ID, t.Attempt, t.Fence, t.Title)
+	}
+	if len(rep.Skipped) > 0 {
+		fmt.Printf("  跳过    %s（另一个回收者正在处理）\n", strings.Join(rep.Skipped, "、"))
 	}
 	return 0
 }
@@ -215,6 +311,7 @@ func cmdTaskAck(args []string) int {
 	who := fs.String("who", "", "回执者（必须是被派的 agent）")
 	status := fs.String("status", "", "done / blocked / failed / cancelled …（认不出的照收）")
 	note := fs.String("note", "", "回执说明")
+	fence := fs.Int64("fence", 0, "pull 返回的围栏号（带上它，旧持有者就写不进来）")
 	flagArgs, posArgs := splitArgs(args, map[string]bool{})
 	if err := fs.Parse(flagArgs); err != nil {
 		return 2
@@ -243,7 +340,7 @@ func cmdTaskAck(args []string) int {
 		return hotUnreachable(err)
 	}
 	defer st.Close()
-	saved, err := st.AckTask(posArgs[1], a.Slug, *status, *note)
+	saved, err := st.AckTaskFenced(posArgs[1], a.Slug, *fence, *status, *note)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "回执没记上：%v\n", err)
 		return 1
@@ -257,9 +354,11 @@ func cmdTaskLs(args []string) int {
 	o := addTaskOpts(fs)
 	who := fs.String("who", "", "只看这个 agent 的任务")
 	status := fs.String("status", "", "只看这个状态")
+	stage := fs.String("stage", "", "只看这个协议阶段")
+	overdue := fs.Bool("overdue", false, "只看已超期（终态不算）")
 	limit := fs.Int("limit", 50, "最多几条")
 	asJSON := fs.Bool("json", false, "出 JSON（默认人读）")
-	flagArgs, posArgs := splitArgs(args, map[string]bool{"json": true})
+	flagArgs, posArgs := splitArgs(args, map[string]bool{"json": true, "overdue": true})
 	if err := fs.Parse(flagArgs); err != nil {
 		return 2
 	}
@@ -307,6 +406,12 @@ func cmdTaskLs(args []string) int {
 		if strings.TrimSpace(*status) != "" && t.Status != *status {
 			continue
 		}
+		if strings.TrimSpace(*stage) != "" && t.Stage != *stage {
+			continue
+		}
+		if *overdue && !t.Overdue(time.Now()) {
+			continue
+		}
 		out = append(out, t)
 	}
 	if *asJSON {
@@ -322,7 +427,14 @@ func cmdTaskLs(args []string) int {
 		return 0
 	}
 	for _, t := range out {
-		fmt.Printf("  %-20s %-9s v%-3d →%-14s %s\n", t.ID, t.Status, t.Version, t.To, t.Title)
+		fmt.Printf("  %-20s %-8s %-9s v%-3d →%-14s %s\n", t.ID, t.Stage, t.Status, t.Version, t.To, t.Title)
+		if t.DueAt != "" || t.Priority != "" {
+			late := ""
+			if d, ok := t.OverdueFor(time.Now()); ok {
+				late = " · 超期 " + d.Round(time.Minute).String()
+			}
+			fmt.Printf("    due %s · priority %s%s\n", dashIfEmpty(t.DueAt), dashIfEmpty(t.Priority), late)
+		}
 	}
 	return 0
 }

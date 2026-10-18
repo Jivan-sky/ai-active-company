@@ -3619,6 +3619,257 @@ queued / running → 409、重复 → `already=true` 且不追加、中文显示
 真 Redis + 真 HTTP：`done` 任务从看板归档，`by=陈知行` 落成 `cs-owner`，热层归零，
 `/api/timeline` 报 `total=1 / green=1`；重复归档只回「早已沉淀」。
 
+### 7.1.68 可沉淀候选：闭环的事只是原料，技能写入仍是另一刀（2026-10-18）
+
+**问题**：`settle` 把做完的事落进 timeline 之后，链路就断了 —— 没有一处回答「这些闭环的事里，
+哪些够格变成技能」。同时技能这一面只有 `ctxpack` 的**单岗位视图**（`skills[]` 逐条标 missing）：
+没有人把**全公司**的「声明了但没正文」摊开，也看不见「有正文、没有任何岗位声明」的孤儿技能 ——
+后者对 agent 不可见，却占着 `skills/` 的位置。
+
+**落点**：新增 `internal/distill`（纯函数 + 一个只读 Loader），三个出口共用一份：
+`anc distill ls` / `/api/distill` / 看板「沉淀」页下半部分。
+
+- **候选口径只有一条**：`timeline.Fold` 后**最后一条是绿档**（`done`）的 case。
+  queued / running / blocked / failed 都不算；要终止的事必须先显式结账成终态。
+  一个 case 多行时，最后一条就是当前态 —— 与看板「时间线」页同一把尺子。
+- **signals 只陈述证据**：推进条数 / `detail` 合计字数 / `refs` 去重个数 / 同名 case 次数 /
+  同域绿档条数。**没有价值分、没有排序权重** —— 「值不值得写成技能」是人的判断，
+  代码不替它发明一套打分函数（那正是过拟合：业务不会跟算法走）。
+- **技能覆盖**：清单仍来自 `roles/<role>/persona.md` 的 `skills:`，正文仍是
+  `skills/<name>/SKILL.md`（与 `ctxpack` 同一处约定，不另抄一份路径规则）。
+  声明了没正文 → `missing=true` 且写进 `gaps`；有正文但没有任何岗位声明 → `orphans`。
+- **只读**：不写 `skills/`、不改 `timeline`、不碰热层。候选与「写入技能」之间隔着人的确认，
+  这一步没有门禁、也没有自动蒸馏 —— 候选表只是把可核对的事实摆出来。
+- `limit` 只截回显：`candidate_total` 始终是全量，截断时 `truncated=true`，不假装只剩这些。
+
+**没做什么**：没有做「一键把 case 蒸馏成 SKILL.md」；没有做候选打分 / 排序；没有新增审批门禁。
+写入 `skills/` 是后续独立的一步，届时仍由人确认。
+
+**实测**：`go test ./...` 全绿（`internal/distill` 单测 4 条：绿档筛选与排序、signals、技能覆盖 +
+孤儿、空 timeline；`internal/board` 端点 3 条：报告 / limit 截断 / 坏参数；CLI 2 条：JSON 契约 /
+人读输出）。真 vault（沙箱）：CLI 回 2 条候选、`im-send` 缺正文；
+新二进制起在 `127.0.0.1:62777`，`/api/distill` 回 `anc.distill/v1` / `wired=true` /
+`skills_wired=true`，内嵌 `app.js` 含新页面代码；无头 Edge `--dump-dom "#/sediment"` 命中真候选、
+`im-send`、`缺正文` 与「这一块只读」。**没验的**：真机观感、浏览器控制台。
+
+### 7.1.69 沉淀草稿：只打包事实，不替人写步骤（2026-10-18）
+
+**问题**：候选表只告诉人「这条闭环了」，从候选走到 `skills/<name>/SKILL.md` 还是手工的：
+要回去翻 timeline 找证据、抄原始记录、记下 refs。搬的过程中最容易丢的恰恰是**来源**，
+而一份脱离来源的技能，后面没人能核对它对不对。
+
+**落点**：`anc distill draft <vault> <case> [--name <名>] [--force]`，只写
+`skills/_drafts/<名>.md`。
+
+- **只对绿档闭环的 case 出草稿**：与候选表共用同一个 `Build` / `Fold` 口径
+  （`ErrCaseNotFound` / `ErrCaseNotClosed` 分开报）。没闭环的事不该长成技能。
+- **草稿只装事实**：frontmatter（`name` / `status: draft` / `case` / `generated_at` / `source`）、
+  归属（域 / 项目 / 执行 / 最后活动 / 推进条数）、证据（与候选表同一组 signals）、
+  **全部**原始记录（不是 Recent 截断的 5 条）、refs 去重排序。
+  文末给发布步骤：补「何时用 / 输入 / 步骤 / 验证」→ 写正式落点 → 在 `roles` 登记 → 跑 `distill ls` 核对。
+  **运行时没有生成这四段的正文** —— Go 里没有 LLM，也不该拿模板硬凑一套假步骤。
+- **名字**：默认从 case key 压成小写 ASCII（`^[a-z][a-z0-9-]*$`，≤64，字母开头）；
+  推不出来就报错要求 `--name`，不替人编名字。同名**正式技能**已存在时直接拒绝草稿 ——
+  否则草稿永远发不出去，还容易误导。
+- **覆盖**：同名草稿存在时默认拒绝，`--force` 才覆盖；重复生成不会静默改掉上一份。
+- **`_drafts/` 是惰性目录**：`ctxpack` 只认 `skills/<name>/SKILL.md`，`distill` 的
+  `Bodies` 也只看带 `SKILL.md` 的子目录 —— 草稿不会被当成技能，也不会进 orphans。
+
+**没做什么**：没有自动写入 `skills/<name>/SKILL.md`；没有自动登记 `roles`；没有生成步骤正文；
+没有给看板加第三个写口（草稿是 CLI 上人主动打的一刀）。
+
+**实测**：`go test ./...` 全绿（`internal/distill` 新增 3 条：只对绿档出草稿 / Markdown 只装事实 /
+名字规则；CLI 新增 1 条：写 `_drafts`、不碰正式技能、重复拒绝、`--force`、未闭环拒绝、非法名退出 2、
+`_drafts` 不进 orphans）。真 vault（沙箱）跑 `distill draft` 生成了 1231 字节草稿，内容与 timeline 对齐。
+
+### 7.1.70 发布前校验：只拦「写出去会坏」，不替人做决定（2026-10-18）
+
+**问题**：草稿 → `skills/<name>/SKILL.md` 是整条沉淀链里风险最高的一步。四段没写、
+frontmatter 与文件名对不上、正文里夹着明文、正式落点已有同名技能 —— 这些错误一旦落进
+真相源，agent 下一次就会读到一份坏技能；而「发布后没有岗位声明」这种问题不会报错，
+只会静默地让技能对所有人不可见。
+
+**落点**：`internal/distill.Check`（纯函数）+ `anc distill check <vault> <名>`，只读。
+
+- **三档**：`fail` 拦发布 / `warn` 可以发但会出问题 / `ok` 过了。退出码只由 fail 决定
+  （0 / 1 / 2），warn 不拦 —— 那是人的决定。
+- **fail 只收「写出去会坏」的**：名字不合法、草稿不存在、frontmatter 读不懂或 `name` 不一致、
+  四段（何时用 / 输入 / 步骤 / 验证）任一缺内容、占位符（`TODO` / `TBD` / `FIXME` / 待补 / 以后补）、
+  正文命中脱敏规则、正式落点已被占用。
+- **warn 收「发出去也不work」的**：没有任何岗位声明（agent 取不到）、来源 case 对不上、
+  正文有本机绝对路径（换机器失效）、roles / timeline 读不动。**没有把它们升级成 fail**：
+  先发正文再登记角色是合理顺序，代码不该替人排这个序。
+- **明文检查复用审计那一张脱敏表**（`audit.Effective().Apply`，含本机凭据值）——
+  不另写一套正则；命中只报规则名，**不回显命中的原文**。
+- 章节解析按二级标题切、跳过 ``` 代码围栏；空内容（只有空白）也算缺。
+
+**没做什么**：不自动补四段、不自动改 frontmatter、不写 `skills/`、不登记 roles；
+看板没有加第三个写口（校验是 CLI 上的只读动作）。
+
+**实测**：`go test ./...` 全绿（`internal/distill` 新增 6 条：完整草稿通过 / 缺段与空段 /
+占位符与明文 / 只 warn 不拦 / name 不一致与落点冲突 / 非法名早停；CLI 新增 1 条：
+先拦 → 补四段放行 → 落点冲突再拦）。真 vault 副本：未补四段时 `4 fail · 2 warn`、
+退出 1；补完四段后 `0 fail · 2 warn`、退出 0（warn 是绝对路径 ref 与未登记岗位）。
+
+### 7.1.71 任务生命周期：阶段、围栏与回收是三件事（2026-10-18）
+
+**问题**：`status` 既是业务词又被拿来当流程状态，客户换一个词，队列就不认识这条任务了；
+租约过期后没有回收路径，一条失联的任务会永远停在 `running`；而重新派发之后，旧持有者仍能
+拿着过期的回执写回热层 —— 两份「完成」互相覆盖，最后没人知道哪份算数。
+
+**落点**：`stage + fence + CAS + reap`，全部落在 `internal/hot`，CLI / MCP / 看板共用同一份实现。
+
+- **stage 是协议阶段，status 是业务词**：`queued / running / review / blocked / done /
+  cancelled` 只回答「流程走到哪一步」；`DeriveStage` 只对旧数据兜底，认不出的业务词回空，
+  不替调用方猜。`StageForStatus` 也不猜：认不出的词不动阶段。
+- **每次认领发一个围栏号**：`Claim` 先 `SET NX` 抢锁，再 `INCR` fence，最后把租约值写成
+  `owner|fence`。`AckTaskFenced` 比对当前 fence，旧持有者的回执直接拒掉 —— 这就是僵尸写的
+  那一刀。fence 不写进 hash 的 `version`：它属于「谁现在有权写」，不是「内容第几版」。
+- **写状态是 CAS，不是盲写**：任务路径统一走 `PutCAS(state, expectVersion)`，比对、写字段、
+  处理 TTL 压在一次 Redis EVAL 里；版本由存储层推进（成功后 `expect+1`），调用方不再自己
+  `version++`。`ack` 与 `reap` 同时发生时，晚到的那一刀会拿到 `ErrVersion`，不会把对方的结果
+  悄悄盖掉。`Put` 仍保留为显式人工覆盖（`anc hot put`），不走任务状态机。
+- **pull 只认 queued，且认的是列表快照**：`claimIf` 在 `SET NX` 之后重新读状态，要求阶段仍是
+  `queued`、版本仍是快照里的版本；期间任务已经 done / 被回收，就拒掉并放开刚抢的租约。
+  少了这一步，pull 拿旧列表就能把一条已完成的任务复活成 running。
+- **放开租约也是原子比对**：`Release` 先用 EVAL 比对租约原文再 DEL；比对完再删，中间换了
+  认领人就会删掉别人的租约。
+- **回收是 `pull` 前的独立一步**：`ReapExpired` 只处理 `stage=running` 且租约已过期（或
+  根本没租约）的条目；用 5 秒的 `reap` 短锁保证同一条只被处理一次；回队列时 `attempt+1`、
+  `fence+1`、清空 `by`，超过 `max_attempt` 才进 `blocked`。**不删条目、不判失败**。
+- **无到期租约要能与「过期」分开**：`LeaseNoExpiry` 是派生值；没有它，`LeaseTo` 为空会被
+  误读成「租约过期」，reap 就会把一条永不过期的任务抢回来。
+- **结论仍归 `settle`**：`done` 只是 protocol stage，落库与清热层仍走
+  `internal/tasksettle`；回收与回执都不碰 timeline。
+
+**没做什么**：没有把 `stage` 做成可配置状态机；没有让 ANC 主动打断或重派会话；
+没有给 `anc hot put` 加 CAS（它是人的显式覆盖口，不是任务状态机的一部分）。
+
+**实测**：`go test ./...` 全绿（新增：回收回队列 / 超限升级 / 旧 fence 拒绝 / 无租约 ack
+拒绝 / 无到期租约不回收 / CAS 旧版本拒绝 / 旧列表不能复活 done 任务）；`npm run check`
+通过；`gofmt` / `go vet` / `go build` 无输出。真 Redis（EVAL 路径）跑通
+`add(v1) → pull(v2, fence=1) → ack(fence=1, v3)`；租约过期后 `reap → v3/fence=2`，
+下一次 pull 拿 fence=3，旧 fence 的回执被拒。
+
+### 7.1.72 交接与验收：谁交给谁、谁点头、卡住找谁（2026-10-18）
+
+**问题**：只有 `queued / running / done` 的队列，回答不了三件真实发生的事 ——
+一件活要换人（交接）、做完要有人点头（验收）、做不下去要交给具体的人（升级）。
+这三件事如果各自在外面拼，`root / refs / 验收口径` 就会丢，最后没人说得清
+「这条任务从哪来、经过了谁、凭什么算完」。
+
+**落点**：`internal/hot` 的四个方法 —— `HandoffTask / SubmitTask / VerifyTask /
+EscalateTask`；CLI（`anc task handoff|submit|verify|escalate`）与 MCP
+（`anc_task` 的四个 action）调的是同一份实现，不各写一套判断。
+
+- **handoff 不是重新派单**：只有当前持有者能交接，必须带有效租约与 `fence`；
+  `root / from / refs / 历史`保留，只改 `to`，`by` 清空，`hop+1`，回 `queued`。
+  交接到下一手时 `note` 必填 —— 没有理由的换手，接手的人只能重猜一遍。
+  超过 `max_hop` 进 `blocked` 并留着具体下一手：交接成环比交接失败更贵。
+- **跨域 v1 是放行 + 留痕 + 告警**：调用方按 `agents.md` 的 `domain` 算
+  `cross_domain` 传给热层；热层不读 org，也不据此拒绝。看板给红色告警，
+  `audit.Append` 记一条（`tool=anc_task_handoff`）。硬拦留给业务自己拍板。
+- **submit 必须有验收口径**：提交时用调用方给的 `accept`，没给就沿用任务上已有的；
+  两者都空就拒绝 —— 没有「什么算做完」，review 只是走过场。提交后进 `review`、
+  `to=验收人`、`by` 保留作者，并**放开租约**（验收人不做事，只是在看）。
+- **verify 只认提交时写的验收人**：`accepted → done`；`rejected → 回作者队列`，
+  且理由必填 —— 没有理由的驳回等于没说。验收不要求租约，因为 submit 已经放开了。
+  验收人就是提交人时**允许**，但 `review.self=true`，看板与审计都要看得见。
+- **escalate 一定带着下一手**：`running` 中必须持租约与围栏；`review` 中必须是
+  参与方（作者 / 验收人 / 上一手）。结果进 `blocked`，`to` 写明交给谁 ——
+  「blocked 但不知道找谁」等于没升级。跨域同样走审计与看板告警。
+- **不新增 `dedupe_key`**：没有明确的「命中后返回已有工作项」语义，先不写一个
+  永远为空的字段。等真出现重复派单的业务问题，再按那时的口径加。
+- **不把 ack 全面改成必须验收**：没有验收要求的任务仍可 `ack` 直接到终态；
+  只有显式 `submit` 才走 `review`。这是协议能力，不是新门禁。
+
+**没做什么**：没有替 agent 决定「该不该接这一手」；没有 push / 打断；
+没有把跨域硬拒写进代码；没有让热层读取组织真相源（域判断留在调用方）。
+
+**实测**：`go test ./...` 全绿（新增：交接给下一手可 pull / 旧 fence 交接被拒 /
+超 `max_hop` 进 blocked / submit → review / 驳回回作者 / 验收通过 → done /
+自验标记 / escalate → blocked 带下一手 / MCP 全流程）；`npm run check` 通过；
+`gofmt` / `go vet` / `go build` 无输出。真 Redis（2026-10-18）跑通：
+`add → pull(A) → handoff(A→B, cross_domain=true) → pull(B) → submit(reviewer=alice)
+→ verify(rejected) → pull(B) → submit → verify(accepted, done)`，以及另一条
+`escalate(A→bob) → blocked`；两处都在 vault 的 `audit/` 里留下了对应记录。
+
+### 7.1.73 截止、优先级与通知发件箱：超期是事实，不是门禁（2026-10-18）
+
+**问题**：队列知道「谁在做」，但不知道「什么时候该做、谁最急、超期了谁该知道」。
+这三件事混成一件，很容易顺手长出自动升降级、自动改派 —— 那是在替 agent 和业务做决定。
+
+**落点**：`hot.State` 增 `DueAt / Priority`；`due_at` 只在入队时校验 RFC3339
+（`task add --due`、MCP `anc_task enqueue`），空串表示没有截止。超期是**派生字段**：
+`overdue / overdue_secs` 由 `Due()` 现算，不落存储、不改 `stage`；`done / cancelled`
+不算超期。`priority` 是自由文本，只做展示与人工判断，**不参与 pull 排序** ——
+排序规则一旦写死，就会变成一道隐性门禁。
+
+**通知走发件箱**：`internal/outbox` 维护 append-only 的
+`data/state/task-outbox.jsonl` 与游标 `task-outbox.cursor.json`；事件 id 稳定
+（`kind:task:due:vN`），同一事件重复计划不会重复追加，已送的不重发。
+`anc task notify <vault> [--data <目录>] [--send] [--limit 50] [--json]` 默认 dry-run，
+**不写发件箱**；`--send` 才落箱，并按 `org.ProjectName` 路由（业务 agent 用 slug、
+成员用 name，与 render 同一个拼法）。路由不到就写 `route_error` 并计失败，不猜收件人。
+只发三类：`overdue / blocked / review_pending`，不做「每件事都发一条」。
+
+**为什么先落箱再发**：推送是外部副作用，进程随时可能死在「已经发出去了但没有记账」
+中间。先落箱、发一条推一格游标，语义是 at-least-once —— 宁可重发一次，也不要
+「以为送了、其实没送」。游标写失败只告警，不把已送出的事实回滚。
+
+**没做什么**：
+- `capacity`（按人 / agent 的并发上限调度）没做。
+- due 驱动的自动升级没做：超期只发通知，不把任务改成 `blocked`，也不改 `to`。
+- `priority` 不影响 pull 顺序，只是给人看的。
+- MCP 没加 notify action：外发仍是操作者（CLI / 定时任务）的动作，agent 不能自己触发。
+
+**实测**（2026-10-18）：`go test -count=1 ./...` 全绿（新增：超期只对未终态生效 /
+due 入队校验 / 发件箱去重与游标 / blocked 事件 / 看板计数）；`npm run check` 通过；
+`gofmt` / `go vet` / `go build` 无输出。真 Redis 跑通 `add --due（2 小时前）
+--priority high → ls --overdue` 返回 `overdue=true / overdue_secs=7201 / priority=high`；
+`notify` dry-run 只列不发、不写箱；`notify --send` 在无 socket 时退出 1、写 1 行发件箱、
+不写游标。随后用假 unix socket 起一个收件服务真发：首次 `sent=1`、`sent.jsonl` 1 行、
+游标生成；再跑一次 `sent=0`、`appended=0`、`sent.jsonl` 仍 1 行 —— 去重与重放都成立。
+### 7.1.74 冷启动导入：日报是事实，不是让模型再猜一遍的原料（2026-10-18）
+
+**问题**：新客户的 vault 第一天是空的，但客户已有的日报里全是真实发生过的完成项、
+拍过的板和没做完的待办。把这些交给模型「总结成任务」，等于让一个会编的东西决定
+新客户第一周做什么；猜错一条，队列里就多一条没人认领的假工作。
+
+**落点**：`anc import reports <vault> <日报目录>`，解析器在
+`internal/reportimport`（纯函数、无 I/O），CLI 只负责落两处：
+
+- **读结构**：`## 完成事项` / `## 关键决策` 的 bullet → timeline；
+  `## 遗留待办` / `## 今日待办` 的 checkbox 与表格（按表头「任务 / 状态」定位） → 待办。
+  `###` 子标题下的说明性 bullet 不当待办；`---` 把子标题那段收口，后面的 bullet 回到顶层。
+- **待办以最后一次出现为准**：标题去掉括号说明后归并，只留最后一次；最后一次是
+  `[ ]` 才入队，`[x]` 只进 timeline，`~~划线~~` 跳过。**不按项目归并** —— 日报的
+  project tag 时常缺一份，带上项目会把同一件事拆成两条。
+- **稳定 id**：`rpt-<日期>-<段>-<hash10>`。重导按 id 跳过：timeline 不重复追加，
+  任务不重复入队，也不覆盖别人正在做的事。
+- **导入不关闭任务**：日报说「做完了」只写 timeline；任务状态仍由 agent 回执 /
+  人验收决定。ANC 不替执行者改状态。
+- **落点只有两处**：`timeline/<YYYY-MM>.<by>.jsonl` 与热层队列。vault 的 markdown
+  一行不动 —— 真相源仍只归人与 `anc ingest`。
+- **默认 dry-run**：先看「读到几份、多少条、要派给谁」，`--apply` 才写。
+
+**为什么不用模型**：日报的格式是稳定的，规则能复现、能核对、能写单测；模型读同一份
+日报两次可能给出两套任务。冷启动最怕的不是漏一条，是**派错一条后没人知道它是假的**。
+
+**测试里改掉的一条规则**：最初把 `###` 子标题下的所有 bullet 都当待办，真实日报里
+「现象 / 根因 / 证据」这些说明行当场变成任务。现在子标题下没 checkbox 的 bullet
+只当说明，不派单；只有顶层没写 checkbox 的才按未完成收，并留 warning。
+
+**没做什么**：不导周报 / 月报；不解析纯散文（正文不会变成任务）；不自动关闭任务；
+不按项目归并；不改 vault 的 markdown；不替 agent 决定先做哪一条。
+
+**实测**（2026-10-18，真实日报 30 份、起算 2026-09-01）：575 条记录 → 441 条
+timeline + 102 条待办入队 + 31 条被后文覆盖/收口；3 份只有散文、没有可导入条目，
+逐份列在输出里。重导一次：`entries_written=0 / existing=441`、
+`tasks_written=0 / existing=102`。随后跑通第一条闭环：
+`pull(fence=1) → ack(done, v3) → settle`，热层 102 → 101，settle 在
+`timeline/` 新增一条绿档；看板（独立前缀）`/api/hot` 读到 101 条 queued，
+`/api/timeline` 200。`go test -count=1 ./...` 全绿（新增 parser 与 CLI 用例）。
 ## 8. 与 SPEC 的映射
 
 | 本文 | SPEC |

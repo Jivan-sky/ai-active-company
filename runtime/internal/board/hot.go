@@ -29,18 +29,36 @@ type HotLayer interface {
 // AgeSecs 是指针：**没写「这是什么时候的」就不出这个键**。
 // 出个 0 会读成「刚发生」—— 那是在编，不是缺。
 type HotEntryView struct {
-	ID      string `json:"id"`
-	Status  string `json:"status"`
-	Title   string `json:"title"`
-	By      string `json:"by,omitempty"`
-	From    string `json:"from,omitempty"`
-	To      string `json:"to,omitempty"`
-	AsOf    string `json:"as_of,omitempty"`
-	Session string `json:"session,omitempty"`
-	Intent  string `json:"intent,omitempty"`
-	Version int64  `json:"version,omitempty"`
-	AgeSecs *int64 `json:"age_secs,omitempty"`
-	Stale   bool   `json:"stale"`
+	ID            string       `json:"id"`
+	Status        string       `json:"status"`
+	Stage         string       `json:"stage,omitempty"`
+	Fence         int64        `json:"fence,omitempty"`
+	Attempt       int          `json:"attempt,omitempty"`
+	MaxAttempt    int          `json:"max_attempt,omitempty"`
+	Title         string       `json:"title"`
+	By            string       `json:"by,omitempty"`
+	From          string       `json:"from,omitempty"`
+	To            string       `json:"to,omitempty"`
+	Root          string       `json:"root,omitempty"`
+	Parent        string       `json:"parent,omitempty"`
+	Accept        string       `json:"accept,omitempty"`
+	DueAt         string       `json:"due_at,omitempty"`
+	Priority      string       `json:"priority,omitempty"`
+	Overdue       bool         `json:"overdue"`
+	OverdueSecs   *int64       `json:"overdue_secs,omitempty"`
+	Hop           int          `json:"hop,omitempty"`
+	MaxHop        int          `json:"max_hop,omitempty"`
+	Refs          []string     `json:"refs,omitempty"`
+	Handoff       *hot.Handoff `json:"handoff,omitempty"`
+	Review        *hot.Review  `json:"review,omitempty"`
+	AsOf          string       `json:"as_of,omitempty"`
+	Session       string       `json:"session,omitempty"`
+	Intent        string       `json:"intent,omitempty"`
+	Version       int64        `json:"version,omitempty"`
+	LeaseTo       string       `json:"lease_to,omitempty"`
+	LeaseNoExpiry bool         `json:"lease_no_expiry,omitempty"`
+	AgeSecs       *int64       `json:"age_secs,omitempty"`
+	Stale         bool         `json:"stale"`
 }
 
 // HotView 是 `/api/hot` 的形状（schema = anc.hot/v1）—— 「热层里现在住着什么」。
@@ -59,6 +77,10 @@ type HotView struct {
 	StaleAfterSecs int64          `json:"stale_after_secs"` // 多久没动算「不新鲜」
 	Total          int            `json:"total"`
 	Stale          int            `json:"stale"`
+	Overdue        int            `json:"overdue"`
+	Blocked        int            `json:"blocked"`
+	Review         int            `json:"review"`
+	Actionable     int            `json:"actionable"`
 	Entries        []HotEntryView `json:"entries"`
 	// SettlePath 是「归档往哪发」—— 与审批同一口径：由服务端给，前端不另写一份常量。
 	SettlePath string `json:"settle_path"`
@@ -96,10 +118,40 @@ func (s *Server) handleHot(w http.ResponseWriter, r *http.Request) {
 	now := s.now()
 	view.Total = len(list)
 	rows := make([]hotRow, 0, len(list))
+	actionable := map[string]bool{}
 	for _, st := range list {
 		e := HotEntryView{
-			ID: st.ID, Status: st.Status, Title: st.Title, By: st.By, From: st.From, To: st.To,
+			ID: st.ID, Status: st.Status, Stage: st.Stage, Fence: st.Fence,
+			Attempt: st.Attempt, MaxAttempt: st.MaxAttempt, Title: st.Title, By: st.By, From: st.From, To: st.To,
+			Root: st.Root, Parent: st.Parent, Accept: st.Accept, DueAt: st.DueAt, Priority: st.Priority,
+			Hop: st.Hop, MaxHop: st.MaxHop, Refs: st.Refs,
 			AsOf: st.AsOf, Session: st.Session, Intent: st.Intent, Version: st.Version,
+			LeaseTo: st.LeaseTo, LeaseNoExpiry: st.LeaseNoExpiry,
+		}
+		e.Overdue = st.Overdue(now)
+		if d, ok := st.OverdueFor(now); ok {
+			secs := int64(d / time.Second)
+			e.OverdueSecs = &secs
+		}
+		if e.Overdue {
+			view.Overdue++
+			actionable[st.ID] = true
+		}
+		if st.Stage == hot.StageBlocked {
+			view.Blocked++
+			actionable[st.ID] = true
+		}
+		if st.Stage == hot.StageReview && st.Review.Verdict == hot.VerdictPending {
+			view.Review++
+			actionable[st.ID] = true
+		}
+		if st.Handoff.From != "" || st.Handoff.To != "" {
+			h := st.Handoff
+			e.Handoff = &h
+		}
+		if st.Review.By != "" || st.Review.Verdict != "" {
+			r := st.Review
+			e.Review = &r
 		}
 		age, ok := st.Age(now)
 		// 没写「这是什么时候的」→ 没法说它新鲜。照灰，不当成刚发生。
@@ -113,6 +165,7 @@ func (s *Server) handleHot(w http.ResponseWriter, r *http.Request) {
 		}
 		rows = append(rows, hotRow{e: e, hasTime: ok})
 	}
+	view.Actionable = len(actionable)
 	// 有时间的排前面，其中最新的在前；**没时间的沉到最后**（它没有「多新」可比）；
 	// 同一时刻按 id 排 —— 同一份现场两次刷新要逐字节相同。
 	sort.SliceStable(rows, func(i, j int) bool {

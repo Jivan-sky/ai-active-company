@@ -131,6 +131,8 @@ func main() {
 		os.Exit(cmdAgent(args))
 	case "task":
 		os.Exit(cmdTask(args))
+	case "distill":
+		os.Exit(cmdDistill(args))
 	case "approvals":
 		os.Exit(cmdApprovals(args))
 	case "envelope":
@@ -143,6 +145,8 @@ func main() {
 		os.Exit(cmdContext(args))
 	case "ingest":
 		os.Exit(cmdIngest(args))
+	case "import":
+		os.Exit(cmdImport(args))
 	case "org":
 		if len(args) > 0 && args[0] == "check" {
 			os.Exit(cmdOrgCheck(args[1:]))
@@ -191,6 +195,8 @@ func usage() {
   anc ingest <vault> --from <提案.json|-> [--dry-run] [--patch]
   anc ingest --dump-shape            出厂提案形状（数据）；给 harness 那一面照它说话
                                     外部材料进真相源的唯一机器入口：先校验（同一张规则表）再整份替换落盘，不 commit
+  anc import reports <vault> <日报目录> [--to <agent>] [--since YYYY-MM-DD] [--apply]
+                                    日报批量导入：完成/决策进 timeline，未完成待办入队（默认 dry-run，稳定 id 去重）
   anc board serve <vault> [--addr 127.0.0.1:8787]
                                     起只读看板（前端已嵌在二进制里；默认只绑本机）
    anc render <vault> [选项]         渲染 gateway config（默认 dry-run）
@@ -202,7 +208,9 @@ func usage() {
    anc hot ping|put|ls|claim|release|drop|done
                                      「进行中」的热层：状态是当前值，不是历史（达标落库，进行中放这里）
    anc agent beat|ls <vault>          业务 agent 心跳与在线态（在线 ≠ 最近调用）
-   anc task add|pull|ack|ls <vault>   拉取式任务队列（ANC 只入队，agent 自己 pull）
+   anc task add|pull|ack|handoff|submit|verify|escalate|ls <vault>
+                                      拉取式任务队列（ANC 只入队，agent 自己 pull）
+   anc distill ls|draft|check <vault> 可沉淀候选 / 生成草稿 / 发布前校验（只读；不碰正式技能）
    anc approvals add|ls|decide|card|card-action <vault>
                                       提案的待批队列、卡片与「点头」（审批的落点：看板 / 飞书卡片走同一个入口）
                                       卡片长什么样是数据（--frame），值是现算的（谁提的 / 属于谁 / 该谁批）

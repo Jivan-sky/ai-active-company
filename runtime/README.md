@@ -37,6 +37,9 @@ anc board serve ./climax-vault          # http://127.0.0.1:8787
 # 7. 装载：渲染 + 校验 + 装上游 daemon + 凭据桥 + 重启 + 回读（默认 dry-run，--apply 才真做）
 anc apply ./climax-vault
 anc apply ./climax-vault --apply
+
+# 8. 哪些事已经闭环、技能还缺哪段正文（只读；不写 skills/）
+anc distill ls ./climax-vault
 ```
 
 `--tier` 就是九宫格判层：`1` 降本增效型（约 30 人，要省钱）/ `2` 进步型（约 200 人，要进步）/ `3` 战略型（国央企，要战略变革）。**答错层＝后面全错。**
@@ -503,6 +506,76 @@ anc hot done <vault> <id> -by <谁> [-title <一句话>] [--kind execution] [--s
 - **客户端是手写的**：只用得到十几条命令，所以不引第三方 Redis 客户端（零依赖、单 exe、
   `CGO_ENABLED=0`）。换回标准客户端只动 `internal/hot/resp.go` 一个文件。
 
+### 任务队列（`anc task`）
+
+```
+anc task add <vault> --to <agent> --title <一句话> [--id <id>] [--by <谁>]
+                     [--note <正文>] [--domain <域>] [--project <项目>]
+                     [--session <会话>] [--intent queue|interrupt|new_session]
+                     [--root <根 case>] [--parent <父工作项>] [--accept <验收口径>]
+                     [--due <RFC3339>] [--priority <词>]
+                     [--refs a,b] [--max-attempts <n>] [--max-hop <n>]
+anc task pull <vault> --who <agent> [--limit 1] [--lease 10m] [--json]
+anc task ack <vault> <id> --who <agent> --status done [--fence <n>] [--note <回执>]
+anc task handoff <vault> <id> --who <agent> --to <agent> --fence <n> --note <为什么> [--refs a,b]
+anc task submit <vault> <id> --who <agent> --reviewer <agent|成员> --fence <n>
+                              [--accept <验收口径>] [--note <说明>] [--refs a,b]
+anc task verify <vault> <id> --who <验收人> --verdict accepted|rejected [--note <意见>]
+anc task escalate <vault> <id> --who <agent> --to <agent|成员> [--fence <n>] --note <卡点>
+anc task notify <vault> [--data <目录>] [--send] [--limit 50] [--json]
+anc task reap <vault> [--json]
+anc task ls <vault> [--who <agent>] [--stage queued|running|review|blocked|done]
+                    [--status <业务词>] [--overdue] [--limit 50] [--json]
+```
+
+**ANC 只入队、观测、记录；不 push、不杀会话、不替 agent 决定执行策略。** 业务 agent 下次
+`pull` 才看到任务；`intent=interrupt` 只是请求，打不打断当前回合由 agent 自己决定。
+
+- **`stage` 与 `status` 是两根轴**：`stage` 是协议阶段（queued / running / review / blocked /
+  done / cancelled），`status` 是业务词。业务可以加词，机制不跟着猜；认不出的词不会挪动阶段。
+- **认领发围栏号**：每次 `claim` / `reap` 都 `INCR` 一个 fence；回执带上当前 fence，旧持有者
+  拿着旧号回来写会被拒。租约过期不等于任务结束，只说明「这个人可能断了」。
+- **写状态走 CAS**：任务路径的每次写入都带 `version` 比对（Redis EVAL 原子执行），
+  `version` 由存储层推进；两个写者撞上时晚到的一刀拿 `ErrVersion`，不会互相覆盖。
+  `anc hot put` 是显式人工覆盖，仍允许无条件写。
+- **回收在 `pull` 之前跑**：过期租约回队列、`attempt+1`、`fence+1`；超过 `max_attempts`
+  才进 `blocked` 等人接手 —— 是升级，不是删除，也不是判失败。
+- **回执只有被派的人能写**：`ack` 必须给有效租约；`done` 先留在热层，等 `settle` 落库后才清走。
+- **handoff 不是重新派单**：只有当前持有者能交，必须带 `fence`，`note` 写清为什么；
+  `root / from / refs` 保留，只换 `to`，`hop+1` 回队列。超过 `max_hop` 进 `blocked`。
+- **跨域交接默认放行但留痕**：调用方按 `agents.md` 的 `domain` 算跨域，热层不据此拒；
+  看板标红、`audit/` 记一条。要硬拦，是业务自己的门禁，不是这里偷偷加。
+- **submit / verify 是验收那一段**：`submit` 必须有验收口径（任务上已有可沿用），
+  进 `review` 并放开租约；`verify` 只认提交时写的验收人，`accepted → done`，
+  `rejected → 回作者队列`且理由必填。自验允许，但会标 `self` 并告警。
+- **escalate 一定带着下一手**：`running` 中要租约 + `fence`，`review` 中要是参与方；
+  结果进 `blocked`，`to` 写明交给谁 —— 卡住但不知道找谁，等于没升级。
+- **截止与优先级只描述事实**：`--due` 是 RFC3339，超期由 `as_of` 现算成 `overdue` / `overdue_secs`，不改 `stage`、不自动升级；`--priority` 是自由文本，不参与 pull 排序。`task ls --overdue` 只是筛选，不是门禁。
+- **通知先落箱、再发送**：`anc task notify` 默认 dry-run，不写发件箱；`--send` 落 `data/state/task-outbox.jsonl` 并按 `org.ProjectName` 路由，发一条推一格游标（`task-outbox.cursor.json`），只发 `overdue / blocked / review_pending`。语义是 at-least-once：宁可重发，也不要「以为送了、其实没送」。
+- **配置不写死**：地址 / 前缀 / 租约 / 尝试上限都走 flag 或环境变量
+  （`ANC_HOT_ADDR` / `ANC_HOT_PREFIX` / `ANC_TASK_LEASE`）。
+
+### 日报导入（`anc import reports`）
+
+```
+anc import reports <vault> <日报目录> [--to <agent>] [--since YYYY-MM-DD]
+                                   [--by <谁>] [--limit N]
+                                   [--no-timeline] [--no-tasks] [--apply] [--json]
+```
+
+**只把日报里的既成事实搬进来，不替 agent 改执行策略。** 默认 dry-run，`--apply` 才落盘。
+
+- **读结构，不猜语义**：`## 完成事项` / `## 关键决策` 的 bullet → timeline；
+  `## 遗留待办` / `## 今日待办` 的 checkbox 与表格（按「任务 / 状态」列） → 待办。
+  `###` 子标题下的说明性 bullet 不当待办；`---` 之后回到顶层。
+- **待办以最后一次出现为准**：同一标题在多份日报里反复出现，只留最后一次；
+  最后一次是 `[ ]` 才入队，`[x]` 只进 timeline，`~~划线~~` 跳过。
+- **稳定 id**：`rpt-<日期>-<段>-<hash>`。重导不会重复写 timeline，也不会重复入队。
+- **导入不关闭任务**：日报说做完了只写 timeline；任务状态仍由回执 / 验收决定。
+- **落点只有两处**：`timeline/<YYYY-MM>.<by>.jsonl` 与热层任务队列；不写 vault 的 markdown。
+
+没写 checkbox 的顶层 bullet 按未完成收并给出 warning；解析不了的文件逐份列出
+（`没有可识别的章节` / `章节在，但没有可导入的 bullet / 表格`），不静默跳过。
 ### 审批的落点（`anc approvals`）
 
 ```
@@ -730,6 +803,19 @@ harness **H1–H4**、业务 agent 独立账号的五件套。判据一句话：
   `tasksettle.Settle`。测试覆盖：GET 写口 → 405 + `Allow: POST`、匿名 → 400、queued / running → 409、
   已沉淀 → 200 `already=true` 且不追加第二行、中文显示名 → 成员 slug。**真 Redis + 真 HTTP 实测**：
   done 任务从看板归档后热层归零、`/api/timeline` 出现绿色 case；重复归档只回「早已沉淀」。
+- 可沉淀候选（2026-10-18，只读）：`internal/distill` 纯函数 + `anc distill ls` + `/api/distill` +
+  看板「沉淀」页下半部分。测试覆盖：绿档才算候选（先 done 后 running 不算）、折叠取最后一条、
+  signals 逐项、同名统计、技能缺正文 / 孤儿技能、空 timeline 不是错、`limit` 截断如实报
+  `truncated` 且 `candidate_total` 不变。**真 vault 实测**（沙箱 vault）：
+  CLI 回 2 条候选 + `im-send` 缺正文；新二进制起在独立端口，`/api/distill` 回
+  `schema=anc.distill/v1`、`wired=true`、`skills_wired=true`，内嵌 `app.js` 含新页面代码。
+  **浏览器侧也真跑过**：无头 Edge `--dump-dom "#/sediment"` 断言页面上出现了真候选
+  （`ANC 当前落地的 top3 硬卡点`）、`im-send` 与`缺正文`、以及「这一块只读」。
+  **草稿链路**：单测覆盖绿档筛选 / 事实-only Markdown / 名字规则 / 不碰正式技能 / 重复拒绝 /
+  `--force` / 未闭环拒绝 / 非法名退出 2；真 vault 跑 `distill draft` 生成 1231 字节草稿。
+  **发布前校验**：单测覆盖 fail / warn / ok 三档与「明文不回显」；真 vault 副本上未补四段
+  `4 fail · 2 warn`（退出 1），补完四段 `0 fail · 2 warn`（退出 0）。
+  **没验的**：真机观感与浏览器控制台（要 CDP / 人眼）。
 - 探针第四档「灰」（2026-10-09）：单元 6 条（`internal/probe` / `internal/render` / `internal/board` /
   端到端各一条，共 7 条），**变异验证**过（删掉 `AllGreen` 里那行 `continue` → 两条立刻变红）。
   **真 VM 实测**：`unwired: true` 声明 → `anc probe` 退出码 **0**、`anc apply` 回读一致、
@@ -795,6 +881,40 @@ Windows 那份任务只有登录触发器 —— **断电重启后没人登录�
 触发器里有没有 `BootTrigger` / 两条电源设置）—— 只读，不改上游任务；**没装机就跳过**，不给刚 `init` 的机器平添红字。
 `anc apply` 第 7 步在 gateway 拨不通时，还会把「**现在**为什么没起来」与「**下次断电**会不会自己回来」
 分开说（没装 / 被停用 / 正在用电池且带电源条件 / 起来了又死），读不到的那一格照实说读不到 —— 见 `DESIGN.md` §7.1.57。
+
+### 可沉淀候选（`anc distill ls`）
+
+```
+anc distill ls <vault> [--limit 50] [--json]
+anc distill draft <vault> <case> [--name <技能名>] [--force]
+anc distill check <vault> <技能名> [--json]
+```
+
+把「已经闭环的事」与「技能还缺哪段正文」摆在一张表上 —— **只读，一个字节都不写**。
+
+- **候选口径只有一条**：timeline 里**最后一条是绿档**（`done`）的 case。同一 case 先 done 后 running，
+  就按 running 算（没闭环）；要终止的事得先显式结账成终态。一个 case 多行时取最后一条当当前态。
+- **signals 只陈述证据**：几条推进 / `detail` 多少字 / 几个 `refs` / 同名重复几次 / 同域几条 ——
+  **没有价值分、没有优先级**。值不值得写成技能是人的判断，这一层不替谁排。
+- **技能覆盖**：清单来自 `roles/<role>/persona.md` 的 `skills:`，正文看 `skills/<名>/SKILL.md` 在不在；
+  声明了没正文 = `missing`（并写进 `gaps`）。**有正文、没有任何岗位声明**的技能单列为孤儿 ——
+  它对 agent 不可见。
+- **候选不是技能**：写入点是 `skills/<名>/SKILL.md`，那是另一刀（人确认之后）。这条命令不改
+  `timeline`、不碰热层、不写 `skills/`。
+- 看板「沉淀」页下半部分就是这一份（`/api/distill`，schema = `anc.distill/v1`）。
+- **草稿**（`draft`）只对绿档闭环的 case 生成：落到 `skills/_drafts/<名>.md`，
+  **不是** `skills/<名>/SKILL.md`。草稿只装 timeline 里的归属 / 证据 / 原始记录 / 引用，
+  **不编「怎么做」**；发布步骤写在文末（补四段 → 写到正式落点 → 在 `roles` 登记 → 跑 `distill ls` 核对）。
+  名字默认从 case 推（小写 ASCII）；推不出来、或同名正式技能已存在，就用 `--name` 另起。
+- **发布前校验**（`check`）只读，三档结论：
+  - `fail`（拦发布）：名字不合法 / 草稿不在 / frontmatter 的 `name` 与文件名不一致 /
+    「何时用 / 输入 / 步骤 / 验证」任一缺内容 / 占位符（`TODO` 等）/ 明文命中脱敏规则 /
+    正式落点 `skills/<名>/SKILL.md` 已被占用。
+  - `warn`（可以发，但会出问题）：没有岗位声明（发布后 agent 取不到）/ 来源 case 对不上（不是绿档或已删）/
+    正文有本机绝对路径（换台机器失效）/ roles 或 timeline 读不动。
+  - 退出码：`0` = 没有 fail（warn 仍可发布）· `1` = 有 fail · `2` = 用法错。
+  校验结果里**不回显命中的明文**，只报规则名。
+- 设计记录见 `DESIGN.md` §7.1.68（候选）/ §7.1.69（草稿）/ §7.1.70（发布前校验）。
 
 ### 退役：`anc service`（2026-10-07）
 

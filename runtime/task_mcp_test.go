@@ -26,8 +26,20 @@ func (f *fakeTasks) EnqueueTask(spec hot.TaskSpec) (hot.State, error) {
 	s := hot.State{
 		ID: spec.ID, To: spec.To, By: spec.By, From: spec.By, Title: spec.Title, Note: spec.Note,
 		Domain: spec.Domain, Project: spec.Project, Session: spec.Session,
-		Intent: spec.Intent, Status: "queued", Version: 1,
-		AsOf: time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC).Format(time.RFC3339),
+		Intent: spec.Intent, Status: "queued", Stage: hot.StageQueued, Version: 1,
+		Root: spec.Root, Parent: spec.Parent, Accept: spec.Accept, DueAt: spec.DueAt, Priority: spec.Priority,
+		Refs:   spec.Refs,
+		MaxHop: spec.MaxHop,
+		AsOf:   time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC).Format(time.RFC3339),
+	}
+	if s.MaxAttempt <= 0 {
+		s.MaxAttempt = hot.DefaultTaskMaxAttempt
+	}
+	if s.MaxHop <= 0 {
+		s.MaxHop = hot.DefaultTaskMaxHop
+	}
+	if s.Root == "" {
+		s.Root = s.ID
 	}
 	f.m[s.ID] = s
 	return s, nil
@@ -41,10 +53,10 @@ func (f *fakeTasks) PullTasks(to string, limit int, _ time.Duration, session str
 			break
 		}
 		s := f.m[id]
-		if s.To != to || s.Status != "queued" {
+		if s.To != to || s.Stage != hot.StageQueued {
 			continue
 		}
-		s.Status, s.By, s.Version = "running", to, s.Version+1
+		s.Status, s.Stage, s.By, s.Fence, s.Version = "running", hot.StageRunning, to, s.Fence+1, s.Version+1
 		if s.Session == "" {
 			s.Session = session
 		}
@@ -55,6 +67,14 @@ func (f *fakeTasks) PullTasks(to string, limit int, _ time.Duration, session str
 }
 
 func (f *fakeTasks) AckTask(id, who, status, note string) (hot.State, error) {
+	return f.ack(id, who, 0, status, note)
+}
+
+func (f *fakeTasks) AckTaskFenced(id, who string, fence int64, status, note string) (hot.State, error) {
+	return f.ack(id, who, fence, status, note)
+}
+
+func (f *fakeTasks) ack(id, who string, fence int64, status, note string) (hot.State, error) {
 	s, ok := f.m[id]
 	if !ok {
 		return hot.State{}, hot.ErrNotFound
@@ -62,10 +82,122 @@ func (f *fakeTasks) AckTask(id, who, status, note string) (hot.State, error) {
 	if s.To != who {
 		return hot.State{}, fmt.Errorf("not assignee")
 	}
+	if fence != 0 && s.Fence != 0 && fence != s.Fence {
+		return hot.State{}, fmt.Errorf("stale fence")
+	}
 	s.Status, s.Version = status, s.Version+1
+	s.Stage = hot.StageForStatus(status, s.Stage)
 	if note != "" {
 		s.Note = note
 	}
+	f.m[id] = s
+	return s, nil
+}
+
+func (f *fakeTasks) HandoffTask(id, who string, fence int64, to, note string, refs []string, crossDomain bool) (hot.State, error) {
+	s, ok := f.m[id]
+	if !ok {
+		return hot.State{}, hot.ErrNotFound
+	}
+	if s.Stage != hot.StageRunning || s.To != who {
+		return hot.State{}, fmt.Errorf("not holder")
+	}
+	if fence == 0 || s.Fence != fence {
+		return hot.State{}, fmt.Errorf("stale fence")
+	}
+	if strings.TrimSpace(note) == "" {
+		return hot.State{}, fmt.Errorf("note required")
+	}
+	s.Hop++
+	s.Handoff = hot.Handoff{From: who, To: to, Note: note, Refs: refs, CrossDomain: crossDomain, At: s.AsOf}
+	if len(refs) > 0 {
+		s.Refs = append(s.Refs, refs...)
+	}
+	if s.Hop > s.MaxHop {
+		s.Stage, s.Status = hot.StageBlocked, "blocked"
+	} else {
+		s.Stage, s.Status = hot.StageQueued, "queued"
+	}
+	s.To, s.By, s.Version = to, "", s.Version+1
+	f.m[id] = s
+	return s, nil
+}
+
+func (f *fakeTasks) SubmitTask(id, who string, fence int64, reviewer, accept, note string, refs []string) (hot.State, error) {
+	s, ok := f.m[id]
+	if !ok {
+		return hot.State{}, hot.ErrNotFound
+	}
+	if s.Stage != hot.StageRunning || s.To != who {
+		return hot.State{}, fmt.Errorf("not holder")
+	}
+	if fence == 0 || s.Fence != fence {
+		return hot.State{}, fmt.Errorf("stale fence")
+	}
+	if accept == "" {
+		accept = s.Accept
+	}
+	if accept == "" {
+		return hot.State{}, fmt.Errorf("accept required")
+	}
+	s.Accept = accept
+	if len(refs) > 0 {
+		s.Refs = append(s.Refs, refs...)
+	}
+	s.Review = hot.Review{By: reviewer, Verdict: hot.VerdictPending, Note: note, At: s.AsOf, Self: s.By == reviewer}
+	s.Stage, s.Status, s.To, s.By = hot.StageReview, "review", reviewer, who
+	s.Version++
+	f.m[id] = s
+	return s, nil
+}
+
+func (f *fakeTasks) VerifyTask(id, who, verdict, note string) (hot.State, error) {
+	s, ok := f.m[id]
+	if !ok {
+		return hot.State{}, hot.ErrNotFound
+	}
+	if s.Stage != hot.StageReview || s.Review.By != who {
+		return hot.State{}, fmt.Errorf("not reviewer")
+	}
+	switch strings.ToLower(strings.TrimSpace(verdict)) {
+	case "accepted", "accept":
+		verdict = hot.VerdictAccepted
+	case "rejected", "reject":
+		verdict = hot.VerdictRejected
+	default:
+		return hot.State{}, fmt.Errorf("bad verdict")
+	}
+	if verdict == hot.VerdictRejected && strings.TrimSpace(note) == "" {
+		return hot.State{}, fmt.Errorf("note required")
+	}
+	s.Review = hot.Review{By: who, Verdict: verdict, Note: note, At: s.AsOf, Self: s.Review.Self}
+	if verdict == hot.VerdictAccepted {
+		s.Stage, s.Status = hot.StageDone, "done"
+	} else {
+		s.Stage, s.Status, s.To, s.By = hot.StageQueued, "queued", s.By, ""
+	}
+	s.Version++
+	f.m[id] = s
+	return s, nil
+}
+
+func (f *fakeTasks) EscalateTask(id, who string, fence int64, to, note string) (hot.State, error) {
+	s, ok := f.m[id]
+	if !ok {
+		return hot.State{}, hot.ErrNotFound
+	}
+	if strings.TrimSpace(note) == "" {
+		return hot.State{}, fmt.Errorf("note required")
+	}
+	if s.Stage == hot.StageRunning {
+		if s.To != who || fence == 0 || s.Fence != fence {
+			return hot.State{}, fmt.Errorf("not holder")
+		}
+	} else if s.Stage != hot.StageReview {
+		return hot.State{}, fmt.Errorf("bad stage")
+	}
+	s.Stage, s.Status, s.To = hot.StageBlocked, "blocked", to
+	s.Version++
 	f.m[id] = s
 	return s, nil
 }
@@ -164,6 +296,139 @@ func TestTaskPullModelAndVersion(t *testing.T) {
 	at := ack["task"].(map[string]any)
 	if at["status"] != "done" || at["version"] != float64(3) || at["note"] != "完成" {
 		t.Fatalf("ack 契约不对：%v", at)
+	}
+}
+
+func TestTaskHandoffSubmitVerifyEscalateViaMCP(t *testing.T) {
+	h, _, _ := taskHarness(t)
+	text, isErr := callTool(t, h, "anc_task", map[string]any{
+		"action": "enqueue", "id": "t-flow", "to": "tradebot", "title": "跑一遍交接",
+		"accept": "抽检 200 通且零漏检", "refs": []string{"doc-1"},
+	})
+	if isErr {
+		t.Fatalf("入队失败：%s", text)
+	}
+	text, isErr = callTool(t, h, "anc_task", map[string]any{"action": "pull", "who": "tradebot"})
+	if isErr {
+		t.Fatalf("pull 失败：%s", text)
+	}
+	var pulled map[string]any
+	if err := json.Unmarshal([]byte(text), &pulled); err != nil {
+		t.Fatal(err)
+	}
+	fence := int64(pulled["tasks"].([]any)[0].(map[string]any)["fence"].(float64))
+
+	text, isErr = callTool(t, h, "anc_task", map[string]any{
+		"action": "handoff", "id": "t-flow", "who": "tradebot", "to": "shipbot",
+		"fence": fence, "note": "这活该物流接", "refs": []string{"doc-2"},
+	})
+	if isErr {
+		t.Fatalf("handoff 失败：%s", text)
+	}
+	var ho map[string]any
+	if err := json.Unmarshal([]byte(text), &ho); err != nil {
+		t.Fatal(err)
+	}
+	if ho["cross_domain"] != true {
+		t.Fatalf("不同域交接应标成跨域：%v", ho)
+	}
+	ht := ho["task"].(map[string]any)
+	if ht["stage"] != "queued" || ht["hop"] != float64(1) || ht["to"] != "shipbot" || ht["by"] != "" {
+		t.Fatalf("handoff 契约不对：%v", ht)
+	}
+	if ht["accept"] != "抽检 200 通且零漏检" || ht["root"] != "t-flow" {
+		t.Fatalf("handoff 不该丢验收口径 / 根：%v", ht)
+	}
+
+	text, isErr = callTool(t, h, "anc_task", map[string]any{"action": "pull", "who": "shipbot"})
+	if isErr {
+		t.Fatalf("shipbot pull 失败：%s", text)
+	}
+	var pulled2 map[string]any
+	if err := json.Unmarshal([]byte(text), &pulled2); err != nil {
+		t.Fatal(err)
+	}
+	fence2 := int64(pulled2["tasks"].([]any)[0].(map[string]any)["fence"].(float64))
+
+	text, isErr = callTool(t, h, "anc_task", map[string]any{
+		"action": "submit", "id": "t-flow", "who": "shipbot", "reviewer": "alice",
+		"fence": fence2, "note": "做完了",
+	})
+	if isErr {
+		t.Fatalf("submit 失败：%s", text)
+	}
+	var sub map[string]any
+	if err := json.Unmarshal([]byte(text), &sub); err != nil {
+		t.Fatal(err)
+	}
+	st := sub["task"].(map[string]any)
+	review := st["review"].(map[string]any)
+	if st["stage"] != "review" || st["to"] != "alice" || review["verdict"] != "pending" {
+		t.Fatalf("submit 契约不对：%v", st)
+	}
+
+	text, isErr = callTool(t, h, "anc_task", map[string]any{
+		"action": "verify", "id": "t-flow", "who": "alice", "verdict": "rejected", "note": "漏了 3 通",
+	})
+	if isErr {
+		t.Fatalf("reject 失败：%s", text)
+	}
+	var rej map[string]any
+	if err := json.Unmarshal([]byte(text), &rej); err != nil {
+		t.Fatal(err)
+	}
+	rt := rej["task"].(map[string]any)
+	if rt["stage"] != "queued" || rt["to"] != "shipbot" {
+		t.Fatalf("驳回后应回作者队列：%v", rt)
+	}
+
+	text, isErr = callTool(t, h, "anc_task", map[string]any{"action": "pull", "who": "shipbot"})
+	if isErr {
+		t.Fatalf("二次 pull 失败：%s", text)
+	}
+	var pulled3 map[string]any
+	if err := json.Unmarshal([]byte(text), &pulled3); err != nil {
+		t.Fatal(err)
+	}
+	fence3 := int64(pulled3["tasks"].([]any)[0].(map[string]any)["fence"].(float64))
+	callTool(t, h, "anc_task", map[string]any{
+		"action": "submit", "id": "t-flow", "who": "shipbot", "reviewer": "alice", "fence": fence3,
+	})
+	text, isErr = callTool(t, h, "anc_task", map[string]any{
+		"action": "verify", "id": "t-flow", "who": "alice", "verdict": "accepted",
+	})
+	if isErr {
+		t.Fatalf("验收通过失败：%s", text)
+	}
+	var acc map[string]any
+	if err := json.Unmarshal([]byte(text), &acc); err != nil {
+		t.Fatal(err)
+	}
+	if acc["task"].(map[string]any)["stage"] != "done" {
+		t.Fatalf("验收通过后应是 done：%v", acc)
+	}
+
+	callTool(t, h, "anc_task", map[string]any{"action": "enqueue", "id": "t-esc", "to": "tradebot", "title": "卡点"})
+	text, _ = callTool(t, h, "anc_task", map[string]any{"action": "pull", "who": "tradebot"})
+	var escPull map[string]any
+	if err := json.Unmarshal([]byte(text), &escPull); err != nil {
+		t.Fatal(err)
+	}
+	escFence := int64(escPull["tasks"].([]any)[0].(map[string]any)["fence"].(float64))
+	text, isErr = callTool(t, h, "anc_task", map[string]any{
+		"action": "escalate", "id": "t-esc", "who": "tradebot", "to": "bob",
+		"fence": escFence, "note": "等客户确认口径",
+	})
+	if isErr {
+		t.Fatalf("escalate 失败：%s", text)
+	}
+	var esc map[string]any
+	if err := json.Unmarshal([]byte(text), &esc); err != nil {
+		t.Fatal(err)
+	}
+	et := esc["task"].(map[string]any)
+	if et["stage"] != "blocked" || et["to"] != "bob" {
+		t.Fatalf("升级后应是 blocked 且带下一手：%v", et)
 	}
 }
 

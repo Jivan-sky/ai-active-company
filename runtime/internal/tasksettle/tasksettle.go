@@ -93,14 +93,18 @@ func Settle(st Store, vault, id string, o Opts) (Result, error) {
 	if strings.TrimSpace(status) == "" {
 		return Result{}, errors.New("这条没有状态 —— 先回执，或显式给 status")
 	}
+	stage := strings.TrimSpace(t.Stage)
+	if stage == "" {
+		stage = hot.DeriveStage(t.Status)
+	}
 	if strings.TrimSpace(o.Status) == "" {
-		switch strings.ToLower(strings.TrimSpace(t.Status)) {
-		case "queued":
+		switch stage {
+		case hot.StageQueued:
 			return Result{}, fmt.Errorf(
 				"%w：任务 %s 还在队列里（queued）—— 还没人拉走。要终止就显式给 status=cancelled（或其他终态）", ErrOpen, id)
-		case "running":
+		case hot.StageRunning, hot.StageReview, hot.StageBlocked:
 			return Result{}, fmt.Errorf(
-				"%w：任务 %s 还在进行中（running）—— 还没做完的事不落库。先回执，或显式给 status 说明这是谁的决定", ErrOpen, id)
+				"%w：任务 %s 还在进行中（%s）—— 还没做完的事不落库。先回执，或显式给 status 说明这是谁的决定", ErrOpen, id, stage)
 		}
 	}
 

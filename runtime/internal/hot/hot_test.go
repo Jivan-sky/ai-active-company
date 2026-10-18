@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -128,12 +129,18 @@ func TestRESPErrorReply(t *testing.T) {
 
 func TestFieldsRoundTrip(t *testing.T) {
 	in := State{
-		ID: "t-1", Status: "running", By: "alice", From: "lead", To: "bob", Domain: "ops", Project: "P",
+		ID: "t-1", Status: "running", Stage: StageRunning, Fence: 7, Attempt: 2, MaxAttempt: 3,
+		By: "alice", From: "lead", To: "bob", Domain: "ops", Project: "P",
 		Title: "一句话", Note: "备注", AsOf: "2026-10-10T10:00:00+08:00",
 		Session: "s-1", Intent: "interrupt", Version: 7,
+		Root: "root-1", Parent: "p-1", Accept: "抽检 200 通", Hop: 2, MaxHop: 6,
+		DueAt: "2026-10-20T18:00:00+08:00", Priority: "high",
+		Refs:    []string{"doc-a", "doc-b"},
+		Handoff: Handoff{From: "alice", To: "bob", Note: "换手", CrossDomain: true, At: "2026-10-10T09:00:00+08:00"},
+		Review:  Review{By: "lead", Verdict: VerdictPending, Note: "待看", At: "2026-10-10T09:30:00+08:00", Self: true},
 	}
 	got := StateFromFields(in.Fields())
-	if got != in {
+	if !reflect.DeepEqual(got, in) {
 		t.Fatalf("绕过一圈变了：\n got %#v\nwant %#v", got, in)
 	}
 }
@@ -147,8 +154,58 @@ func TestFieldsWriteEmptyOnesToo(t *testing.T) {
 	if _, ok := m["to"]; !ok {
 		t.Fatalf("空字段没被写出去：%#v", m)
 	}
-	if len(m) != 13 {
+	if len(m) != 27 {
 		t.Fatalf("字段数变了（%d）—— 加字段时顺手把这里的数一起改", len(m))
+	}
+}
+
+func TestOverdueIsDerivedNotStored(t *testing.T) {
+	now := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name string
+		s    State
+		want bool
+	}{
+		{"没定截止", State{Stage: StageRunning}, false},
+		{"截止读不懂", State{Stage: StageRunning, DueAt: "明天下午"}, false},
+		{"还没到", State{Stage: StageRunning, DueAt: now.Add(time.Hour).Format(time.RFC3339)}, false},
+		{"已经过了", State{Stage: StageRunning, DueAt: now.Add(-time.Hour).Format(time.RFC3339)}, true},
+		{"done 不算超期", State{Stage: StageDone, DueAt: now.Add(-time.Hour).Format(time.RFC3339)}, false},
+		{"cancelled 不算超期", State{Stage: StageCancelled, DueAt: now.Add(-time.Hour).Format(time.RFC3339)}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := c.s.Overdue(now); got != c.want {
+				t.Fatalf("Overdue=%v，想要 %v", got, c.want)
+			}
+		})
+	}
+	late := State{Stage: StageBlocked, DueAt: now.Add(-2 * time.Hour).Format(time.RFC3339)}
+	if d, ok := late.OverdueFor(now); !ok || d != 2*time.Hour {
+		t.Fatalf("超期时长应为 2h，实得 %v / %v", d, ok)
+	}
+}
+
+func TestDeriveStage(t *testing.T) {
+	cases := map[string]string{
+		"queued": StageQueued, "running": StageRunning, "review": StageReview,
+		"blocked": StageBlocked, "done": StageDone, "failed": StageDone,
+		"cancelled": StageCancelled, "": "", "waiting_customer": "",
+	}
+	for status, want := range cases {
+		if got := DeriveStage(status); got != want {
+			t.Fatalf("DeriveStage(%q)=%q，想要 %q", status, got, want)
+		}
+	}
+}
+
+func TestLeaseNoExpiryIsHeld(t *testing.T) {
+	now := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
+	if !(State{LeaseNoExpiry: true}).LeaseHeld(now) {
+		t.Fatal("没有到期时间的租约应视为仍然持有")
+	}
+	if (State{LeaseTo: ""}).LeaseHeld(now) {
+		t.Fatal("没有租约的条目不该被当成持有")
 	}
 }
 
@@ -265,12 +322,13 @@ func TestClaimOccupiedSaysWho(t *testing.T) {
 
 func TestClaimTakesOwnership(t *testing.T) {
 	st, f := fakeStore(t,
-		"+OK\r\n",         // SET NX 抢到了
-		"*0\r\n",          // HGETALL：热层里本来还没有这条
-		":3\r\n",          // HSET
-		":1\r\n",          // PERSIST
-		"$5\r\nalice\r\n", // GET 租约
-		":-1\r\n",         // PTTL：没设到期
+		"+OK\r\n",           // SET NX 抢到了
+		":1\r\n",            // INCR fence
+		"+OK\r\n",           // SET 租约 owner|fence
+		"*0\r\n",            // HGETALL：热层里本来还没有这条
+		":1\r\n",            // EVAL：CAS 写入成功
+		"$7\r\nalice|1\r\n", // GET 租约
+		":-1\r\n",           // PTTL：没设到期
 	)
 	got, err := st.Claim("t-1", "alice", 0)
 	if err != nil {
@@ -281,6 +339,15 @@ func TestClaimTakesOwnership(t *testing.T) {
 	}
 	if got.Status != "running" {
 		t.Fatalf("认领后该是 running，实得 %q", got.Status)
+	}
+	if got.Stage != StageRunning {
+		t.Fatalf("认领后该进 running 阶段，实得 %q", got.Stage)
+	}
+	if got.Fence != 1 {
+		t.Fatalf("围栏号该是 1，实得 %d", got.Fence)
+	}
+	if !got.LeaseNoExpiry {
+		t.Fatal("lease=0 该记成「无到期租约」")
 	}
 	if got.LeaseTo != "" {
 		t.Fatalf("没设到期就不该报出到期时刻：%q", got.LeaseTo)

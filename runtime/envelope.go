@@ -250,6 +250,10 @@ type taskQueue interface {
 	EnqueueTask(hot.TaskSpec) (hot.State, error)
 	PullTasks(to string, limit int, lease time.Duration, session string) ([]hot.State, error)
 	AckTask(id, who, status, note string) (hot.State, error)
+	HandoffTask(id, who string, fence int64, to, note string, refs []string, crossDomain bool) (hot.State, error)
+	SubmitTask(id, who string, fence int64, reviewer, accept, note string, refs []string) (hot.State, error)
+	VerifyTask(id, who, verdict, note string) (hot.State, error)
+	EscalateTask(id, who string, fence int64, to, note string) (hot.State, error)
 	List() ([]hot.State, error)
 	// Get / Drop 是「结账」那一刀：先落 timeline，再把当前值清走。
 	Get(id string) (hot.State, bool, error)
@@ -344,27 +348,44 @@ func (g *envelopeIngress) srv() *mcp.Server {
 			Name: "anc_task",
 			Description: "任务队列（**pull 模型**）：ANC 只入队，agent 自己拉；ANC 不 push、不杀会话。" +
 				"action=enqueue 由 ANC / 人派活（to 必须是 agents.md 里真实存在的 agent）；" +
-				"action=pull 由 agent 拉走交给自己的任务（原子认领，返回 session / intent / version）；" +
-				"action=ack 回执（只有被派的人能回）；action=settle 结账（先落 timeline、再清热层，幂等）；" +
+				"action=pull 由 agent 拉走交给自己的任务（原子认领，返回 session / intent / version / fence）；" +
+				"action=ack 回执（只有被派的人能回；带上 fence，旧持有者写不进来）；" +
+				"action=handoff 交接（当前持有者 + fence；root / refs 保留，只换下一手，超过 max_hop 进 blocked）；" +
+				"action=submit 交验收（必须有验收口径；提交后放开租约）；" +
+				"action=verify 验收（只有提交时写的验收人能判；accepted → done，rejected → 回作者队列）；" +
+				"action=escalate 升级卡点（结果进 blocked，to 必须是具体的人 / agent）；" +
+				"action=settle 结账（先落 timeline、再清热层，幂等）；" +
 				"action=list 只读查看。" +
+				"due_at / priority 是事实：超期只回 overdue 标记，不改 stage、不自动升级；" +
+				"租约过期不会删任务：下一次 pull 先 reap，回队列并 attempt+1；超过 max_attempt 才进 blocked。" +
 				"intent=interrupt 只是随任务带过去的**请求**，是否打断当前回合由 agent 自己决定。",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"action":  map[string]any{"type": "string", "description": "enqueue / pull / ack / list / settle"},
-					"id":      map[string]any{"type": "string", "description": "任务 id（enqueue 可选；ack / settle 必填）"},
-					"to":      map[string]any{"type": "string", "description": "交给哪个业务 agent（slug 或 name）"},
-					"who":     map[string]any{"type": "string", "description": "pull / ack / settle 的 agent 身份（slug 或 name）"},
-					"title":   map[string]any{"type": "string", "description": "一句话任务（enqueue）"},
-					"note":    map[string]any{"type": "string", "description": "正文 / 回执说明"},
-					"domain":  map[string]any{"type": "string", "description": "业务域 slug（可选）"},
-					"project": map[string]any{"type": "string", "description": "项目 slug（可选）"},
-					"session": map[string]any{"type": "string", "description": "会话 id（可选；不填 = 沿用 agent 当前会话）"},
-					"intent":  map[string]any{"type": "string", "description": "queue / interrupt / new_session（默认 queue；ANC 只转达）"},
-					"status":  map[string]any{"type": "string", "description": "ack / settle 的状态词：done / blocked / failed / cancelled …（认不出的照收）"},
-					"limit":   map[string]any{"type": "number", "description": "pull / list 最多几条（默认 pull=1、list=50）"},
-					"kind":    map[string]any{"type": "string", "description": "settle 落库类型：execution / decision / note（默认 execution）"},
-					"refs":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "settle 引用（文件 / 链接，可选）"},
+					"action":      map[string]any{"type": "string", "description": "enqueue / pull / ack / handoff / submit / verify / escalate / list / settle"},
+					"id":          map[string]any{"type": "string", "description": "任务 id（enqueue 可选；ack / settle 必填）"},
+					"to":          map[string]any{"type": "string", "description": "下一手：enqueue / handoff 的业务 agent；escalate 可以是成员"},
+					"who":         map[string]any{"type": "string", "description": "动作发起人：pull / ack / handoff / submit / escalate 的业务 agent；verify 是验收人"},
+					"title":       map[string]any{"type": "string", "description": "一句话任务（enqueue）"},
+					"note":        map[string]any{"type": "string", "description": "正文 / 回执说明"},
+					"domain":      map[string]any{"type": "string", "description": "业务域 slug（可选）"},
+					"project":     map[string]any{"type": "string", "description": "项目 slug（可选）"},
+					"session":     map[string]any{"type": "string", "description": "会话 id（可选；不填 = 沿用 agent 当前会话）"},
+					"intent":      map[string]any{"type": "string", "description": "queue / interrupt / new_session（默认 queue；ANC 只转达）"},
+					"status":      map[string]any{"type": "string", "description": "ack / settle 的状态词：done / blocked / failed / cancelled …（认不出的照收）"},
+					"fence":       map[string]any{"type": "number", "description": "pull 返回的围栏号；ack 可选，handoff / submit 必填，running 中 escalate 必填"},
+					"max_attempt": map[string]any{"type": "number", "description": "enqueue 可选：失联几次后不再自动回队列（默认 3）"},
+					"max_hop":     map[string]any{"type": "number", "description": "enqueue 可选：最多交接几次（默认 6）"},
+					"root":        map[string]any{"type": "string", "description": "enqueue 可选：根 case id（默认 = 任务 id）"},
+					"parent":      map[string]any{"type": "string", "description": "enqueue 可选：父工作项 id"},
+					"accept":      map[string]any{"type": "string", "description": "验收口径（enqueue 可选，submit 可用已有值）"},
+					"due_at":      map[string]any{"type": "string", "description": "截止时刻（RFC3339；enqueue 可选；空 = 没定截止）"},
+					"priority":    map[string]any{"type": "string", "description": "优先级（自由文本；enqueue 可选；热层不猜大小）"},
+					"reviewer":    map[string]any{"type": "string", "description": "submit：验收人（业务 agent 或成员）"},
+					"verdict":     map[string]any{"type": "string", "description": "verify：accepted / rejected"},
+					"limit":       map[string]any{"type": "number", "description": "pull / list 最多几条（默认 pull=1、list=50）"},
+					"kind":        map[string]any{"type": "string", "description": "settle 落库类型：execution / decision / note（默认 execution）"},
+					"refs":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "引用 / 证据（enqueue / handoff / submit / settle 可选）"},
 				},
 				"required": []string{"action"},
 			},
@@ -481,6 +502,10 @@ func (g *envelopeIngress) taskOp(args map[string]any) (string, bool) {
 			Title: strArg(args, "title"), Note: strArg(args, "note"),
 			Domain: strArg(args, "domain"), Project: strArg(args, "project"),
 			Session: session, Intent: intent,
+			Root: strArg(args, "root"), Parent: strArg(args, "parent"),
+			Accept: strArg(args, "accept"), DueAt: strArg(args, "due_at"), Priority: strArg(args, "priority"),
+			Refs:       listArg(args, "refs"),
+			MaxAttempt: intArg(args, "max_attempt", 0), MaxHop: intArg(args, "max_hop", 0),
 		})
 		if err != nil {
 			return "任务没入队：" + err.Error(), true
@@ -532,11 +557,111 @@ func (g *envelopeIngress) taskOp(args map[string]any) (string, bool) {
 		if why != "" {
 			return why, true
 		}
-		saved, err := g.Tasks.AckTask(strArg(args, "id"), who.Slug, strArg(args, "status"), strArg(args, "note"))
+		fence := int64(intArg(args, "fence", 0))
+		var saved hot.State
+		var err error
+		if fence != 0 {
+			if f, ok := g.Tasks.(interface {
+				AckTaskFenced(string, string, int64, string, string) (hot.State, error)
+			}); ok {
+				saved, err = f.AckTaskFenced(strArg(args, "id"), who.Slug, fence, strArg(args, "status"), strArg(args, "note"))
+			} else {
+				saved, err = g.Tasks.AckTask(strArg(args, "id"), who.Slug, strArg(args, "status"), strArg(args, "note"))
+			}
+		} else {
+			saved, err = g.Tasks.AckTask(strArg(args, "id"), who.Slug, strArg(args, "status"), strArg(args, "note"))
+		}
 		if err != nil {
 			return "回执没记上：" + err.Error(), true
 		}
 		return mustJSON(map[string]any{"ok": true, "task": taskMap(saved, "")}), false
+	case "handoff":
+		from, why := findAgent(o, strArg(args, "who"))
+		if why != "" {
+			return why, true
+		}
+		target, why := findAgent(o, strArg(args, "to"))
+		if why != "" {
+			return why, true
+		}
+		id := strings.TrimSpace(strArg(args, "id"))
+		note := strings.TrimSpace(strArg(args, "note"))
+		if id == "" || note == "" {
+			return "handoff 需要 id 与 note（为什么交给下一手）", true
+		}
+		cross := taskCrossDomain(taskActor{ID: from.Slug, Domain: from.Domain, IsAgent: true},
+			taskActor{ID: target.Slug, Domain: target.Domain, IsAgent: true})
+		saved, err := g.Tasks.HandoffTask(id, from.Slug, int64(intArg(args, "fence", 0)), target.Slug,
+			note, listArg(args, "refs"), cross)
+		if err != nil {
+			return "交接没成：" + err.Error(), true
+		}
+		taskAudit(g.Vault, from.Slug, "anc_task_handoff", "task:"+id, audit.ResultOK,
+			fmt.Sprintf("to=%s hop=%d cross_domain=%t note=%s", target.Slug, saved.Hop, cross, note))
+		return mustJSON(map[string]any{"ok": true, "task": taskMap(saved, ""), "cross_domain": cross}), false
+	case "submit":
+		author, why := findAgent(o, strArg(args, "who"))
+		if why != "" {
+			return why, true
+		}
+		checker, why := resolveTaskActor(o, strArg(args, "reviewer"))
+		if why != "" {
+			return why, true
+		}
+		id := strings.TrimSpace(strArg(args, "id"))
+		if id == "" {
+			return "submit 需要 id", true
+		}
+		saved, err := g.Tasks.SubmitTask(id, author.Slug, int64(intArg(args, "fence", 0)), checker.ID,
+			strArg(args, "accept"), strArg(args, "note"), listArg(args, "refs"))
+		if err != nil {
+			return "提交没成：" + err.Error(), true
+		}
+		warn := ""
+		if saved.Review.Self {
+			warn = "验收人就是提交人 —— 已放行并标记 self，请在看板 / 审计里重点看"
+		}
+		return mustJSON(map[string]any{"ok": true, "task": taskMap(saved, ""), "warning": warn}), false
+	case "verify":
+		checker, why := resolveTaskActor(o, strArg(args, "who"))
+		if why != "" {
+			return why, true
+		}
+		id := strings.TrimSpace(strArg(args, "id"))
+		if id == "" {
+			return "verify 需要 id", true
+		}
+		saved, err := g.Tasks.VerifyTask(id, checker.ID, strArg(args, "verdict"), strArg(args, "note"))
+		if err != nil {
+			return "验收没成：" + err.Error(), true
+		}
+		warn := ""
+		if saved.Review.Self {
+			warn = "验收人就是提交人 —— 已放行并标记 self，不代表独立复核"
+		}
+		return mustJSON(map[string]any{"ok": true, "task": taskMap(saved, ""), "warning": warn}), false
+	case "escalate":
+		from, why := resolveTaskActor(o, strArg(args, "who"))
+		if why != "" {
+			return why, true
+		}
+		target, why := resolveTaskActor(o, strArg(args, "to"))
+		if why != "" {
+			return why, true
+		}
+		id := strings.TrimSpace(strArg(args, "id"))
+		note := strings.TrimSpace(strArg(args, "note"))
+		if id == "" || note == "" {
+			return "escalate 需要 id 与 note（卡在哪）", true
+		}
+		cross := taskCrossDomain(from, target)
+		saved, err := g.Tasks.EscalateTask(id, from.ID, int64(intArg(args, "fence", 0)), target.ID, note)
+		if err != nil {
+			return "升级没成：" + err.Error(), true
+		}
+		taskAudit(g.Vault, from.ID, "anc_task_escalate", "task:"+id, audit.ResultOK,
+			fmt.Sprintf("to=%s cross_domain=%t note=%s", target.ID, cross, note))
+		return mustJSON(map[string]any{"ok": true, "task": taskMap(saved, ""), "cross_domain": cross}), false
 	case "settle":
 		id := strings.TrimSpace(strArg(args, "id"))
 		if id == "" {
@@ -615,7 +740,7 @@ func (g *envelopeIngress) taskOp(args map[string]any) (string, bool) {
 		}
 		return mustJSON(map[string]any{"ok": true, "count": len(out), "tasks": out}), false
 	}
-	return "不认识的 action：" + action + "（enqueue / pull / ack / list）", true
+	return "不认识的 action：" + action + "（enqueue / pull / ack / handoff / submit / verify / escalate / list / settle）", true
 }
 
 // sessionOp 只记录会话归属，不控制 harness。
@@ -685,9 +810,26 @@ func taskMap(s hot.State, currentSession string) map[string]any {
 	if strings.TrimSpace(session) == "" {
 		session = currentSession
 	}
+	now := time.Now()
+	overdue := s.Overdue(now)
+	var overdueSecs int64
+	if d, ok := s.OverdueFor(now); ok {
+		overdueSecs = int64(d / time.Second)
+	}
+	refs := s.Refs
+	if refs == nil {
+		refs = []string{}
+	}
 	return map[string]any{
-		"id": s.ID, "status": s.Status, "title": s.Title, "note": s.Note,
+		"id": s.ID, "status": s.Status, "stage": s.Stage,
+		"fence": s.Fence, "attempt": s.Attempt, "max_attempt": s.MaxAttempt,
+		"lease_to": s.LeaseTo, "lease_no_expiry": s.LeaseNoExpiry,
+		"title": s.Title, "note": s.Note,
 		"by": s.By, "from": s.From, "to": s.To, "domain": s.Domain, "project": s.Project,
+		"root": s.Root, "parent": s.Parent, "accept": s.Accept,
+		"due_at": s.DueAt, "priority": s.Priority, "overdue": overdue, "overdue_secs": overdueSecs,
+		"hop": s.Hop, "max_hop": s.MaxHop, "refs": refs,
+		"handoff": s.Handoff, "review": s.Review,
 		"session": session, "intent": s.Intent, "version": s.Version,
 		"same_session": currentSession == "" || session == currentSession,
 		"as_of":        s.AsOf,

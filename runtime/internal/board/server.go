@@ -76,6 +76,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/runtime", s.handleRuntime)
 	mux.HandleFunc("/api/dataflow", s.handleDataflow)
 	mux.HandleFunc("/api/assets", s.handleAssets)
+	mux.HandleFunc("/api/distill", s.handleDistill)
 	mux.HandleFunc("/api/timeline", s.handleTimeline)
 	mux.HandleFunc("/api/audit", s.handleAudit)
 	mux.HandleFunc("/api/approvals", s.handleApprovals)

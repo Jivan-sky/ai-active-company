@@ -1,0 +1,52 @@
+:root {
+  --bg: #08090a;
+  --panel: rgba(21, 23, 24, 0.74);
+  --glass: linear-gradient(155deg, rgba(48, 50, 50, 0.62), rgba(12, 13, 13, 0.82) 58%, rgba(18, 20, 20, 0.76));
+  --line: rgba(236, 236, 232, 0.10);
+  --line-2: rgba(236, 236, 232, 0.18);
+  --line-3: rgba(236, 236, 232, 0.28);
+  --text: #ecece9;
+  --text-2: #b8b9b4;
+  --muted: #7f817b;
+  --gold: #e6cf98;
+  --rose: #e3b3c4;
+  --mint: #ace0cf;
+  --lav: #c3bcf2;
+  --cyan: #acd6e8;
+  --red: #ff7385;
+  --green: #6be3ad;
+  --amber: #e8c48c;
+  --indigo: #a9b8ff;
+  --radius: 14px;
+  --radius-lg: 20px;
+  --ui: "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+        "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+  --display: "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+             "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+}
+* { box-sizing: border-box; }
+html, body { min-height: 100%; }
+html { background: var(--bg); }
+body {
+  margin: 0; color: var(--text); font: 13.5px/1.58 var(--ui);
+  -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
+  background:
+    radial-gradient(ellipse 68% 48% at 18% -6%, rgba(120, 122, 118, 0.20), transparent 68%),
+    radial-gradient(ellipse 46% 44% at 92% 8%, rgba(120, 92, 104, 0.14), transparent 70%),
+    radial-gradient(ellipse 60% 50% at 50% 108%, rgba(86, 110, 102, 0.10), transparent 70%),
+    linear-gradient(180deg, #0a0b0c 0%, #08090a 48%, #090a0b 100%);
+  background-attachment: fixed;
+}
+::selection { background: rgba(230, 207, 152, 0.28); color: #fff; }
+a { color: var(--gold); text-decoration: none; }
+a:hover { color: #f3dfad; }
+button, input, textarea, select { font: inherit; color: inherit; }
+button { cursor: pointer; }
+em { font-style: normal; color: var(--muted); font-size: 0.78em; margin-left: 0.36em; font-weight: 400; letter-spacing: 0.02em; }
+strong { font-weight: 600; }
+:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; border-radius: 8px; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.14); border-radius: 999px; border: 3px solid transparent; background-clip: content-box; }
+::-webkit-scrollbar-track { background: transparent; }
+

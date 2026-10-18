@@ -36,7 +36,8 @@ func beatHarness(t *testing.T) (http.Handler, *envelopeIngress, *fakeBeatStore) 
 	writeIntoFixture(t, vault, "agents.md",
 		"| slug | name | domain | role | tools | harness | model | description | app_id |\n"+
 			"|---|---|---|---|---|---|---|---|---|\n"+
-			"| tradebot | 贸易助手 | trade | manager | anc_read_context | codex | | 处理贸易单据 | |\n")
+			"| tradebot | 贸易助手 | trade | manager | anc_read_context | codex | | 处理贸易单据 | |\n"+
+			"| shipbot | 物流助手 | logistics | ops | anc_read_context | codex | | 跟踪物流 | |\n")
 	g := &envelopeIngress{
 		Vault: vault, DataDir: t.TempDir(),
 		Now: ticking(time.Date(2026, 10, 18, 3, 0, 0, 0, time.UTC)),
