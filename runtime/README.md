@@ -53,7 +53,7 @@ anc apply ./climax-vault --apply
 ├─ 10-knowledge/        已整理的客户知识（一条易变事实只在一处维护）
 ├─ 20-ops/              00-七个连接件.md · 01-操作日志与可逆性分级.md
 ├─ 30-delivery/         00-判层卡.md · 01-计划书.md
-├─ 40-roles/            角色 persona
+├─ roles/               角色 persona（`anc org init` 往里填；人设只此一处）
 ├─ 50-skills/           客户专属 skill
 └─ company/             公司自描述（onboarding 产物）
 ```

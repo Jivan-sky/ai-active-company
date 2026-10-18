@@ -73,7 +73,7 @@ var skeletonDirs = []string{
 	"10-knowledge",
 	"20-ops",
 	"30-delivery",
-	"40-roles",
+	"roles",
 	"50-skills",
 	"company",
 }
