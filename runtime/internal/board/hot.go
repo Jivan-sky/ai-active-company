@@ -35,6 +35,9 @@ type HotEntryView struct {
 	By      string `json:"by,omitempty"`
 	To      string `json:"to,omitempty"`
 	AsOf    string `json:"as_of,omitempty"`
+	Session string `json:"session,omitempty"`
+	Intent  string `json:"intent,omitempty"`
+	Version int64  `json:"version,omitempty"`
 	AgeSecs *int64 `json:"age_secs,omitempty"`
 	Stale   bool   `json:"stale"`
 }
@@ -90,7 +93,10 @@ func (s *Server) handleHot(w http.ResponseWriter, r *http.Request) {
 	view.Total = len(list)
 	rows := make([]hotRow, 0, len(list))
 	for _, st := range list {
-		e := HotEntryView{ID: st.ID, Status: st.Status, Title: st.Title, By: st.By, To: st.To, AsOf: st.AsOf}
+		e := HotEntryView{
+			ID: st.ID, Status: st.Status, Title: st.Title, By: st.By, To: st.To,
+			AsOf: st.AsOf, Session: st.Session, Intent: st.Intent, Version: st.Version,
+		}
 		age, ok := st.Age(now)
 		// 没写「这是什么时候的」→ 没法说它新鲜。照灰，不当成刚发生。
 		e.Stale = !ok || st.Stale(now, hot.DefaultStale)

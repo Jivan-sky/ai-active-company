@@ -187,13 +187,15 @@ const envelopeServeUsage = `anc envelope serve —— 起 ANC 的接入面（MCP
 用法：
   anc envelope serve <vault 目录> [--addr 127.0.0.1:8791] [--data <data 目录>]
                                      [--hot-addr 127.0.0.1:6379] [--hot-prefix anc]
-                                     [--agent-stale 2m]
+                                     [--agent-stale 2m] [--task-lease 10m]
 
 harness（Claude Code / Codex / …）通过 MCP 调工具。桥的两半都在这一个入口上：
 
   入站（agent 递给 ANC）  anc_send_envelope(who, on_behalf_of?, kind?, body, scope_domain?, scope_project?, refs?, needs?)
   出站（agent 向 ANC 要）  anc_read_context(who, on_behalf_of?, domain?)
   心跳（agent 报在线）    anc_agent_heartbeat(who, status?, task_id?, note?)
+  任务（pull 模型）       anc_task(action=enqueue|pull|ack|list)
+  会话（只记录归属）      anc_session(action=get|rotate, who)
 
 入站服务端做的事，一件不多：
   1 读工具参数 → 拼成一份信封 JSON → **走和线上同一条 Parse**（不给工具路径单开一套校验）
@@ -236,8 +238,18 @@ type hotLister interface {
 // 会逼着只想要读出口的实现也去做写口。
 type agentHeartbeats interface {
 	BeatAgent(hot.AgentHeartbeat) (hot.AgentHeartbeat, error)
+	GetAgent(string) (hot.AgentHeartbeat, bool, error)
 	ListAgents() ([]hot.AgentHeartbeat, error)
 	AgentStale() time.Duration
+}
+
+// taskQueue 是任务的**拉取式**队列：入队、agent 主动 pull、回执。
+// 没有 push / kill / interrupt 方法 —— ANC 不接管 harness 的执行策略。
+type taskQueue interface {
+	EnqueueTask(hot.TaskSpec) (hot.State, error)
+	PullTasks(to string, limit int, lease time.Duration, session string) ([]hot.State, error)
+	AckTask(id, who, status, note string) (hot.State, error)
+	List() ([]hot.State, error)
 }
 
 // envelopeIngress 是接入面本身：一个 vault + 一个 data 目录 + 一个热层 + 一个时钟。
@@ -250,6 +262,10 @@ type envelopeIngress struct {
 	Hot hotLister
 	// Agents 是同一个热层的心跳视角。nil = 没接上：心跳工具如实报错，不假装记下了。
 	Agents agentHeartbeats
+	// Tasks 是任务队列（pull 模型）。nil = 没接上：任务工具如实报错。
+	Tasks taskQueue
+	// TaskLease 是 pull 走之后的认领租约；0 = hot.DefaultTaskLease。
+	TaskLease time.Duration
 }
 
 func (g *envelopeIngress) now() time.Time {
@@ -315,10 +331,52 @@ func (g *envelopeIngress) srv() *mcp.Server {
 					"status":  map[string]any{"type": "string", "description": "可选：running / idle / blocked / failed（认不出的词照收）"},
 					"task_id": map[string]any{"type": "string", "description": "可选：当前在做的 task id"},
 					"note":    map[string]any{"type": "string", "description": "可选：一句话说明"},
+					"session": map[string]any{"type": "string", "description": "可选：当前会话 id（只做归属记录，不控制 harness）"},
 				},
 				"required": []string{"who"},
 			},
 			Call: g.agentHeartbeat,
+		}, {
+			Name: "anc_task",
+			Description: "任务队列（**pull 模型**）：ANC 只入队，agent 自己拉；ANC 不 push、不杀会话。" +
+				"action=enqueue 由 ANC / 人派活（to 必须是 agents.md 里真实存在的 agent）；" +
+				"action=pull 由 agent 拉走交给自己的任务（原子认领，返回 session / intent / version）；" +
+				"action=ack 回执（只有被派的人能回）；action=list 只读查看。" +
+				"intent=interrupt 只是随任务带过去的**请求**，是否打断当前回合由 agent 自己决定。",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"action":  map[string]any{"type": "string", "description": "enqueue / pull / ack / list"},
+					"id":      map[string]any{"type": "string", "description": "任务 id（enqueue 可选；ack 必填）"},
+					"to":      map[string]any{"type": "string", "description": "交给哪个业务 agent（slug 或 name）"},
+					"who":     map[string]any{"type": "string", "description": "pull / ack 的 agent 身份（slug 或 name）"},
+					"title":   map[string]any{"type": "string", "description": "一句话任务（enqueue）"},
+					"note":    map[string]any{"type": "string", "description": "正文 / 回执说明"},
+					"domain":  map[string]any{"type": "string", "description": "业务域 slug（可选）"},
+					"project": map[string]any{"type": "string", "description": "项目 slug（可选）"},
+					"session": map[string]any{"type": "string", "description": "会话 id（可选；不填 = 沿用 agent 当前会话）"},
+					"intent":  map[string]any{"type": "string", "description": "queue / interrupt / new_session（默认 queue；ANC 只转达）"},
+					"status":  map[string]any{"type": "string", "description": "ack 的状态词：done / blocked / failed / cancelled …（认不出的照收）"},
+					"limit":   map[string]any{"type": "number", "description": "pull / list 最多几条（默认 pull=1、list=50）"},
+				},
+				"required": []string{"action"},
+			},
+			Call: g.taskOp,
+		}, {
+			Name: "anc_session",
+			Description: "会话归属（**只记录，不控制 harness**）：get 看当前会话与名下任务；" +
+				"rotate 换一个新的会话 id（等价于 ANC 侧记下 /new，之后的任务默认落到新会话）。" +
+				"它不会杀进程、不会打断正在跑的回合 —— 真正的会话切换由 agent 自己执行。",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"action":     map[string]any{"type": "string", "description": "get / rotate"},
+					"who":        map[string]any{"type": "string", "description": "业务 agent（slug 或 name）"},
+					"session_id": map[string]any{"type": "string", "description": "rotate 可选：指定新会话 id；不填则生成"},
+				},
+				"required": []string{"action", "who"},
+			},
+			Call: g.sessionOp,
 		}},
 		Log: func(format string, a ...any) { fmt.Printf("  · "+format+"\n", a...) },
 	}
@@ -345,10 +403,11 @@ func (g *envelopeIngress) agentHeartbeat(args map[string]any) (string, bool) {
 		return why, true
 	}
 	h, err := g.Agents.BeatAgent(hot.AgentHeartbeat{
-		Slug:   a.Slug,
-		Status: strings.TrimSpace(strArg(args, "status")),
-		TaskID: strings.TrimSpace(strArg(args, "task_id")),
-		Note:   strings.TrimSpace(strArg(args, "note")),
+		Slug:    a.Slug,
+		Status:  strings.TrimSpace(strArg(args, "status")),
+		TaskID:  strings.TrimSpace(strArg(args, "task_id")),
+		Note:    strings.TrimSpace(strArg(args, "note")),
+		Session: strings.TrimSpace(strArg(args, "session")),
 	})
 	if err != nil {
 		return "心跳没记上：" + err.Error(), true
@@ -365,6 +424,241 @@ func (g *envelopeIngress) agentHeartbeat(args map[string]any) (string, bool) {
 		"as_of":            h.AsOf,
 		"stale_after_secs": int64(g.Agents.AgentStale() / time.Second),
 	}), false
+}
+
+// taskOp 是任务队列的唯一入口：enqueue / pull / ack / list。
+// 它**不**调用任何「给 agent 发消息 / 杀会话」的能力 —— 队列是 ANC 与 agent 之间
+// 唯一的下发路径，agent 自己 pull，才知道自己有没有空接。
+func (g *envelopeIngress) taskOp(args map[string]any) (string, bool) {
+	if g.Tasks == nil {
+		return "热层没接上 —— 任务队列无处可写（起接入面时给 --hot-addr 或设 ANC_HOT_ADDR）", true
+	}
+	action := strings.ToLower(strings.TrimSpace(strArg(args, "action")))
+	o, err := org.Load(g.Vault)
+	if err != nil {
+		return "真相源加载失败，认不出 agent：" + err.Error(), true
+	}
+	switch action {
+	case "enqueue":
+		to, why := findAgent(o, strArg(args, "to"))
+		if why != "" {
+			return why, true
+		}
+		id := strings.TrimSpace(strArg(args, "id"))
+		if id == "" {
+			id = fmt.Sprintf("t-%d", g.now().UnixNano())
+		}
+		// 先看「这个人手上还有什么」—— 回话里把冲突摊开，让人 / agent 自己决定排队还是请求打断。
+		active := []hot.State{}
+		if list, lerr := g.Tasks.List(); lerr == nil {
+			for _, t := range list {
+				if t.To == to.Slug && (t.Status == "queued" || t.Status == "running") {
+					active = append(active, t)
+				}
+			}
+		}
+		intent := strings.ToLower(strings.TrimSpace(strArg(args, "intent")))
+		if intent == "" {
+			intent = "queue"
+		}
+		session := strings.TrimSpace(strArg(args, "session"))
+		if session == "" && g.Agents != nil {
+			// 入队时就把「哪条会话」钉住：之后 rotate 只影响新任务，
+			// 不把已经排队的活悄悄挪到另一条会话里。
+			if h, ok, herr := g.Agents.GetAgent(to.Slug); herr == nil && ok {
+				session = h.Session
+			}
+		}
+		saved, err := g.Tasks.EnqueueTask(hot.TaskSpec{
+			ID: id, To: to.Slug, By: firstNonEmpty(strArg(args, "by"), "anc"),
+			Title: strArg(args, "title"), Note: strArg(args, "note"),
+			Domain: strArg(args, "domain"), Project: strArg(args, "project"),
+			Session: session, Intent: intent,
+		})
+		if err != nil {
+			return "任务没入队：" + err.Error(), true
+		}
+		running := 0
+		for _, t := range active {
+			if t.Status == "running" {
+				running++
+			}
+		}
+		return mustJSON(map[string]any{
+			"ok": true, "task": taskMap(saved, ""),
+			"active": activeTasks(active), "active_running": running,
+			"queue_behind_running": running > 0 && intent != "interrupt",
+			"interrupt_requested":  intent == "interrupt",
+			"note": "已入队。ANC 不会主动插话；agent 下次 pull 才会看到。" +
+				"intent=interrupt 只是请求，是否打断当前回合由 agent 自己决定。",
+		}), false
+	case "pull":
+		who, why := findAgent(o, strArg(args, "who"))
+		if why != "" {
+			return why, true
+		}
+		current := ""
+		if g.Agents != nil {
+			if h, ok, herr := g.Agents.GetAgent(who.Slug); herr == nil && ok {
+				current = h.Session
+			}
+		}
+		tasks, err := g.Tasks.PullTasks(who.Slug, intArg(args, "limit", 1), g.taskLease(), current)
+		if err != nil {
+			return "任务拉不了：" + err.Error(), true
+		}
+		out := make([]map[string]any, 0, len(tasks))
+		for _, t := range tasks {
+			out = append(out, taskMap(t, current))
+		}
+		note := "没有交给你、还没被拉走的任务"
+		if len(out) > 0 {
+			note = "已原子认领。除非任务的 intent=new_session，否则继续用同一会话；" +
+				"intent=interrupt 表示 ANC 请求你判断是否打断当前回合 —— 决定权在你。"
+		}
+		return mustJSON(map[string]any{
+			"ok": true, "who": who.Slug, "current_session": current,
+			"count": len(out), "tasks": out, "note": note,
+		}), false
+	case "ack":
+		who, why := findAgent(o, strArg(args, "who"))
+		if why != "" {
+			return why, true
+		}
+		saved, err := g.Tasks.AckTask(strArg(args, "id"), who.Slug, strArg(args, "status"), strArg(args, "note"))
+		if err != nil {
+			return "回执没记上：" + err.Error(), true
+		}
+		return mustJSON(map[string]any{"ok": true, "task": taskMap(saved, "")}), false
+	case "list":
+		list, err := g.Tasks.List()
+		if err != nil {
+			return "任务读不了：" + err.Error(), true
+		}
+		who := strings.TrimSpace(strArg(args, "who"))
+		if who != "" {
+			a, why := findAgent(o, who)
+			if why != "" {
+				return why, true
+			}
+			who = a.Slug
+		}
+		to := strings.TrimSpace(strArg(args, "to"))
+		if to != "" {
+			a, why := findAgent(o, to)
+			if why != "" {
+				return why, true
+			}
+			to = a.Slug
+		}
+		status := strings.TrimSpace(strArg(args, "status"))
+		limit := intArg(args, "limit", 50)
+		if limit > 200 {
+			limit = 200
+		}
+		out := make([]map[string]any, 0, limit)
+		for _, t := range list {
+			if len(out) >= limit {
+				break
+			}
+			if who != "" && t.To != who && t.By != who {
+				continue
+			}
+			if to != "" && t.To != to {
+				continue
+			}
+			if status != "" && t.Status != status {
+				continue
+			}
+			out = append(out, taskMap(t, ""))
+		}
+		return mustJSON(map[string]any{"ok": true, "count": len(out), "tasks": out}), false
+	}
+	return "不认识的 action：" + action + "（enqueue / pull / ack / list）", true
+}
+
+// sessionOp 只记录会话归属，不控制 harness。
+func (g *envelopeIngress) sessionOp(args map[string]any) (string, bool) {
+	if g.Agents == nil {
+		return "热层没接上 —— 会话归属无处可写（起接入面时给 --hot-addr 或设 ANC_HOT_ADDR）", true
+	}
+	action := strings.ToLower(strings.TrimSpace(strArg(args, "action")))
+	o, err := org.Load(g.Vault)
+	if err != nil {
+		return "真相源加载失败，认不出 agent：" + err.Error(), true
+	}
+	a, why := findAgent(o, strArg(args, "who"))
+	if why != "" {
+		return why, true
+	}
+	h, _, err := g.Agents.GetAgent(a.Slug)
+	if err != nil {
+		return "会话读不了：" + err.Error(), true
+	}
+	switch action {
+	case "get":
+		tasks := []hot.State{}
+		if g.Tasks != nil {
+			if list, lerr := g.Tasks.List(); lerr == nil {
+				for _, t := range list {
+					if t.To == a.Slug && (t.Status == "queued" || t.Status == "running") {
+						tasks = append(tasks, t)
+					}
+				}
+			}
+		}
+		return mustJSON(map[string]any{
+			"ok": true, "slug": a.Slug, "name": a.Name, "session": h.Session,
+			"as_of": h.AsOf, "status": h.Status, "tasks": activeTasks(tasks),
+			"note": "会话 id 只是 ANC 侧的归属记录；它不代表 harness 的真实 session。",
+		}), false
+	case "rotate":
+		id := strings.TrimSpace(strArg(args, "session_id"))
+		if id == "" {
+			id = fmt.Sprintf("s-%d", g.now().UnixNano())
+		}
+		h.Slug = a.Slug
+		h.Session = id
+		h.AsOf = g.now().Format(time.RFC3339)
+		saved, err := g.Agents.BeatAgent(h)
+		if err != nil {
+			return "新会话没记上：" + err.Error(), true
+		}
+		return mustJSON(map[string]any{
+			"ok": true, "slug": a.Slug, "session": saved.Session, "as_of": saved.AsOf,
+			"note": "只换了归属。没有杀进程、没有打断任何回合；agent 自己决定何时 /new。",
+		}), false
+	}
+	return "不认识的 action：" + action + "（get / rotate）", true
+}
+
+func (g *envelopeIngress) taskLease() time.Duration {
+	if g.TaskLease > 0 {
+		return g.TaskLease
+	}
+	return hot.DefaultTaskLease
+}
+
+func taskMap(s hot.State, currentSession string) map[string]any {
+	session := s.Session
+	if strings.TrimSpace(session) == "" {
+		session = currentSession
+	}
+	return map[string]any{
+		"id": s.ID, "status": s.Status, "title": s.Title, "note": s.Note,
+		"by": s.By, "to": s.To, "domain": s.Domain, "project": s.Project,
+		"session": session, "intent": s.Intent, "version": s.Version,
+		"same_session": currentSession == "" || session == currentSession,
+		"as_of":        s.AsOf,
+	}
+}
+
+func activeTasks(list []hot.State) []map[string]any {
+	out := make([]map[string]any, 0, len(list))
+	for _, t := range list {
+		out = append(out, taskMap(t, ""))
+	}
+	return out
 }
 
 // findAgent 把调用方写的身份解成一个已登记的业务 agent。
@@ -489,6 +783,26 @@ func strArg(args map[string]any, k string) string {
 	return ""
 }
 
+// intArg 收 MCP 的数值参数：JSON 解出来是 float64；也顺手认字符串。
+// 读不懂或 <= 0 时回默认值 —— 不把「0 条」当成用户明确要的 0，那样会静默什么都不做。
+func intArg(args map[string]any, k string, def int) int {
+	switch v := args[k].(type) {
+	case float64:
+		if int(v) > 0 {
+			return int(v)
+		}
+	case int:
+		if v > 0 {
+			return v
+		}
+	case string:
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n > 0 {
+			return n
+		}
+	}
+	return def
+}
+
 func listArg(args map[string]any, k string) []string {
 	raw, ok := args[k].([]any)
 	if !ok {
@@ -589,6 +903,7 @@ func cmdEnvelopeServe(args []string) int {
 	hotAddr := fs.String("hot-addr", "", "热层地址（读出口的「派给我的待办」用它；默认 "+hot.DefaultAddr+"；也可用 ANC_HOT_ADDR）")
 	hotPrefix := fs.String("hot-prefix", "", "热层 key 前缀（默认 "+hot.DefaultPrefix+"；也可用 ANC_HOT_PREFIX）")
 	agentStale := fs.Duration("agent-stale", 0, "多久没心跳不算在线（默认 "+hot.DefaultAgentStale.String()+"；也可用 ANC_AGENT_STALE）")
+	taskLease := fs.Duration("task-lease", 0, "pull 之后的认领租约（默认 "+hot.DefaultTaskLease.String()+"；也可用 ANC_TASK_LEASE）")
 	flagArgs, posArgs := splitArgs(args, map[string]bool{})
 	if err := fs.Parse(flagArgs); err != nil {
 		return 2
@@ -660,18 +975,22 @@ func cmdEnvelopeServe(args []string) int {
 		hotStore = st
 	}
 
-	g := &envelopeIngress{Vault: vault, DataDir: dataDir, Now: time.Now}
+	g := &envelopeIngress{
+		Vault: vault, DataDir: dataDir, Now: time.Now,
+		TaskLease: firstDuration(*taskLease, envDuration("ANC_TASK_LEASE")),
+	}
 	if hotStore != nil {
 		// 同一个底层对象、两条视角：任务（读出口）与心跳（agent 在线态）。
 		// 只在接上时才塞接口 —— 否则会变成「非 nil 的接口里装着 nil 指针」（见上面那段注释）。
 		g.Hot = hotStore
 		g.Agents = hotStore
+		g.Tasks = hotStore
 	}
 	fmt.Printf("ANC 接入面已起（MCP · streamable HTTP · 无状态）：\n")
 	fmt.Printf("  地址   http://%s/mcp\n", urlHost)
 	fmt.Printf("  vault  %s\n", vault)
 	fmt.Printf("  日志   %s\n", filepath.Join(dataDir, envelope.DirName))
-	fmt.Printf("  工具   anc_send_envelope（递进来）· anc_read_context（要出去）· anc_agent_heartbeat（报在线）\n")
+	fmt.Printf("  工具   anc_send_envelope · anc_read_context · anc_agent_heartbeat · anc_task · anc_session\n")
 	fmt.Printf("  热层   %s（「派给我的待办」走它；没接上就如实报缺，不编）\n", hotAddrShown)
 	fmt.Printf("  接入   claude mcp add --transport http anc http://%s/mcp\n", urlHost)
 	fmt.Printf("  退出   Ctrl-C\n\n")

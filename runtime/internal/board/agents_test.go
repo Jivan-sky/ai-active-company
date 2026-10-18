@@ -91,6 +91,10 @@ func TestAgentsOnlineAndStaleAreSeparated(t *testing.T) {
 	vault := demoVault(t)
 	s := &Server{
 		Vault: vault, Now: func() time.Time { return fixedNow },
+		Hot: &fakeHot{list: []hot.State{
+			{ID: "t-1", To: "receptionbot", Status: "running", Title: "抽检"},
+			{ID: "t-2", To: "receptionbot", Status: "queued", Title: "复核"},
+		}},
 		Agents: &fakeAgents{stale: 2 * time.Minute, list: []hot.AgentHeartbeat{
 			{Slug: "receptionbot", Status: "running", TaskID: "t-1", AsOf: fixedNow.Add(-10 * time.Second).Format(time.RFC3339)},
 			{Slug: "shopinitbot", Status: "idle", AsOf: fixedNow.Add(-10 * time.Minute).Format(time.RFC3339)},
@@ -110,6 +114,9 @@ func TestAgentsOnlineAndStaleAreSeparated(t *testing.T) {
 	}
 	if live.TaskID != "t-1" {
 		t.Fatalf("当前任务没带上：%+v", live)
+	}
+	if live.RunningTasks != 1 || live.QueuedTasks != 1 {
+		t.Fatalf("任务队列计数不对：%+v", live)
 	}
 	old := bySlug["shopinitbot"]
 	if old.Online || !old.Stale {

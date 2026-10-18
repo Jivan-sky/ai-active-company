@@ -175,6 +175,7 @@ type LiveAgent = {
   online: boolean; stale: boolean;
   last_seen?: string; age_secs?: number;
   status?: string; task_id?: string; task_title?: string; note?: string;
+  session?: string; running_tasks: number; queued_tasks: number;
 };
 type AgentsView = {
   schema: string; wired: boolean; why?: string; error?: string;
@@ -333,6 +334,7 @@ type DecideReply = {
 type HotEntryView = {
   id: string; status: string; title: string; by?: string; to?: string;
   as_of?: string; age_secs?: number; stale: boolean;
+  session?: string; intent?: string; version?: number;
 };
 type HotView = {
   schema: string; wired: boolean; why?: string; error?: string;
@@ -1230,6 +1232,10 @@ function openMemberDrawer(d: Data, v: BoardView, m: Member): void {
                     : (live?.task_id ?? "") !== ""
                       ? " · 任务：" + live?.task_id
                       : "";
+                  const queue = live === null || (live.running_tasks + live.queued_tasks) === 0
+                    ? ""
+                    : " · 队列 " + live.running_tasks + " 跑 / " + live.queued_tasks + " 等";
+                  const sess = (live?.session ?? "") === "" ? "" : " · 会话 " + live?.session;
                   return el("div", { class: "drow" },
                     el("span", { class: live?.online ? "dot ok" : "dot gray" }),
                     el("span", { class: "drow-main" },
@@ -1239,6 +1245,8 @@ function openMemberDrawer(d: Data, v: BoardView, m: Member): void {
                         + " · " + heartbeat
                         + ((live?.status ?? "") === "" ? "" : " · " + live?.status)
                         + doing
+                        + queue
+                        + sess
                         + " · 运行态 " + st.label
                         + " · " + (call === null ? "无调用记录" : "最近调用 " + sinceText(call.at))),
                       ((live?.note ?? "") === "" ? "" : el("small", { class: "wrap" }, "自报：" + live?.note)),

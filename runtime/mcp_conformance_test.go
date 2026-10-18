@@ -50,12 +50,12 @@ func TestConformanceRealToolsSchemaIsValidJSONSchema(t *testing.T) {
 		t.Fatalf("tools/list 不应报错：%+v", out.Error)
 	}
 
-	// 桥的两半 + 心跳挂在**同一个入口**上（#44 入口唯一性）：三个工具都在，且顺序稳定。
+	// 桥的两半 + 心跳 + 任务 / 会话挂在**同一个入口**上（#44 入口唯一性）：五个工具都在，且顺序稳定。
 	var names []string
 	for _, tool := range out.Result.Tools {
 		names = append(names, tool.Name)
 	}
-	want := []string{"anc_send_envelope", "anc_read_context", "anc_agent_heartbeat"}
+	want := []string{"anc_send_envelope", "anc_read_context", "anc_agent_heartbeat", "anc_task", "anc_session"}
 	if len(names) != len(want) {
 		t.Fatalf("工具个数应为 %d，实际 %d：%v", len(want), len(names), names)
 	}

@@ -885,7 +885,7 @@ Codex 走 `-c mcp_servers.anc.url=...`。两个都是「用完就走」。
 | 文件 | 钉住什么 | 条数 |
 |---|---|---|
 | `internal/mcp/conformance_test.go` | 协议**形状**（用假工具）：initialize 三字段齐全 · `id` 原样回 · `tools/list` 的 `inputSchema` 是 JSON Schema 对象 · `tools/call` 的 `content[]` + `isError` · 缺 `arguments` 要传给工具**空 map** · 批量请求回 `-32700` · 响应 `Content-Type` 是 `application/json` | 7 |
-| `mcp_conformance_test.go`（包外，走真 HTTP） | **真工具面**：恰三个工具且顺序固定（`anc_send_envelope` / `anc_read_context` / `anc_agent_heartbeat`）· description 非空 · `inputSchema.type=object` · 每个参数有 `type` + `description` · `required` 必须指向真实存在的参数 | 1 |
+| `mcp_conformance_test.go`（包外，走真 HTTP） | **真工具面**：恰五个工具且顺序固定（`anc_send_envelope` / `anc_read_context` / `anc_agent_heartbeat` / `anc_task` / `anc_session`）· description 非空 · `inputSchema.type=object` · 每个参数有 `type` + `description` · `required` 必须指向真实存在的参数 | 1 |
 
 **对拍当场抓到一个真缺陷**：`handleCall` 原来是「先 `t.Call(args)`、后补空 map」——
 缺 `arguments` 时工具收到 `nil` map，工具里只要写一次 `args[...]` 就是 **nil map panic**。
@@ -3533,6 +3533,32 @@ D5 在 2026-10-07 就拍了 (a)「合成一棵树、以客户库为根」，但 
 `anc agent beat` 后 `/api/agents` 报 `online=1/total=7` 且带任务标题；MCP 真 JSON-RPC 调
 `anc_agent_heartbeat` 成功，`who=ghostbot` 返回 `isError=true`；把阈值压到 1s 后 CLI 正确报
 「离线（N 秒前）」并保留最后心跳。
+
+### 7.1.65 任务队列是 pull 模型：ANC 入队，agent 自己拉（2026-10-18）
+
+**问题**：ANC 不能主动往 agent 会话里插话 —— 插了就是打断。多 agent 互派若靠「ANC 直接发」，
+就会绕过 harness 自己的回合状态，第二条指令改掉第一条的前提。
+
+**落点**：
+- 任务仍住热层（`hot.State`），新增 `session / intent / version` 三格；
+  `queued → running → done|blocked|failed` 全是**当前值**，不新开第二套任务库。
+- MCP `anc_task(action=enqueue|pull|ack|list)`：
+  - `enqueue` 由 ANC / 人派活；若目标 agent 手上已有 running，回话如实报 `queue_behind_running`；
+    `intent=interrupt` 只标「请求打断」，**不执行**任何杀会话动作。
+  - `pull` 由 agent 自己拉：原子认领（SET NX）、版本 +1、返回 `session` 与 `same_session`；
+    没有任务就回空，不拿「正在忙」冒充。
+  - `ack` 只有被派的人能写；回执后放开租约。`done` 先留在热层，等「落库」那一步再清。
+- MCP `anc_session(action=get|rotate)`：只记录归属。`rotate` 等价于 ANC 侧记下 `/new`，
+  不杀进程、不打断回合；已入队的任务保留入队时的会话，不被后续 rotate 悄悄挪走。
+- CLI `anc task add|pull|ack|ls` 与 MCP 走同一份热层；看板 `/api/agents` 多出
+  `session / running_tasks / queued_tasks`，成员抽屉能看见「跑几条、等几条」。
+
+**没做什么**：没有实现任何强制 interrupt / kill 通道；也没有把 done 自动写 timeline ——
+那是下一步「资产沉淀闭环」的职责。
+
+**实测**：`go test ./...` 全绿（含内存热层上的 enqueue→pull→ack、重复 id、越权回执、
+limit/顺序、MCP 冲突与未知身份）；`npm run check` 通过；真 Redis + 真 MCP 跑通
+`rotate → enqueue(intent=interrupt) → pull(v2) → 看板 running_tasks=1 → ack(done v3)`。
 
 ## 8. 与 SPEC 的映射
 

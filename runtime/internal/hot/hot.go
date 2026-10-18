@@ -25,6 +25,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -43,6 +44,10 @@ const (
 	// 真要按客户的项目周期收口，那是配置项，不是这里的死值。
 	DefaultTTL        = time.Duration(0)
 	DefaultAgentStale = 2 * time.Minute
+	// DefaultTaskLease 是 pull 之后的默认认领租约。
+	// 它防的是「agent 拿到任务后失联，任务永远锁在它手里」；到期不抢、不删，
+	// 只是下一次 pull 可以再认领（同 Claim 的口径）。
+	DefaultTaskLease = 10 * time.Minute
 )
 
 // State 是「一件进行中的事」的当前态。
@@ -58,6 +63,9 @@ type State struct {
 	Title   string
 	Note    string
 	AsOf    string // RFC3339：这个当前值是「什么时候的」—— 新鲜度靠它，不靠 TTL
+	Session string // 这条任务属于哪个会话（空 = 沿用 agent 当前会话）
+	Intent  string // queue / interrupt / new_session …（认不出的照收；ANC 只转达，不执行）
+	Version int64  // 每次任务状态变化 +1；客户端据此判断「拿到的是不是最新的一条」
 	LeaseTo string // RFC3339：认领租约到期时刻（**派生值，不落库**；空 = 没租约）
 }
 
@@ -75,12 +83,16 @@ func (s State) Fields() map[string]string {
 		"title":   s.Title,
 		"note":    s.Note,
 		"as_of":   s.AsOf,
+		"session": s.Session,
+		"intent":  s.Intent,
+		"version": strconv.FormatInt(s.Version, 10),
 	}
 }
 
 // StateFromFields 是 Fields 的逆。认不出的字段**丢掉不算错** ——
 // 热层里多一个别人写的字段，不该让这里读不出东西。
 func StateFromFields(m map[string]string) State {
+	version, _ := strconv.ParseInt(strings.TrimSpace(m["version"]), 10, 64)
 	return State{
 		ID:      m["id"],
 		Status:  m["status"],
@@ -91,6 +103,9 @@ func StateFromFields(m map[string]string) State {
 		Title:   m["title"],
 		Note:    m["note"],
 		AsOf:    m["as_of"],
+		Session: m["session"],
+		Intent:  m["intent"],
+		Version: version,
 	}
 }
 
@@ -185,11 +200,12 @@ func (s State) Age(now time.Time) (time.Duration, bool) {
 // 一条心跳只在「最后一次见到它」这个意义上是当前值：过期不删，只按 AgentStale 打标，
 // 让看板能说「最后心跳在 X 分钟前」，而不是把记录抹成「从未存在」。
 type AgentHeartbeat struct {
-	Slug   string // business agent 的 slug（agents.md 的 slug）—— 身份的锚点
-	Status string // 自报状态：running / idle / blocked / failed …（认不出的照收，不在这里造词）
-	TaskID string // 当前在做的 task id（可选；不校验存不存在，看板能对上标题就显示）
-	Note   string // 一句话说明
-	AsOf   string // RFC3339：最后一次心跳的时刻
+	Slug    string // business agent 的 slug（agents.md 的 slug）—— 身份的锚点
+	Status  string // 自报状态：running / idle / blocked / failed …（认不出的照收，不在这里造词）
+	TaskID  string // 当前在做的 task id（可选；不校验存不存在，看板能对上标题就显示）
+	Note    string // 一句话说明
+	AsOf    string // RFC3339：最后一次心跳的时刻
+	Session string // 当前会话 id；空 = 尚未绑定（ANC 只用它做归属，不控制系统会话）
 }
 
 // Fields 转成热层里那份 hash。空值也照写（同 State.Fields 的理由）。
@@ -200,17 +216,19 @@ func (h AgentHeartbeat) Fields() map[string]string {
 		"task_id": h.TaskID,
 		"note":    h.Note,
 		"as_of":   h.AsOf,
+		"session": h.Session,
 	}
 }
 
 // AgentHeartbeatFromFields 是 Fields 的逆；认不出的字段丢掉不算错。
 func AgentHeartbeatFromFields(m map[string]string) AgentHeartbeat {
 	return AgentHeartbeat{
-		Slug:   m["slug"],
-		Status: m["status"],
-		TaskID: m["task_id"],
-		Note:   m["note"],
-		AsOf:   m["as_of"],
+		Slug:    m["slug"],
+		Status:  m["status"],
+		TaskID:  m["task_id"],
+		Note:    m["note"],
+		AsOf:    m["as_of"],
+		Session: m["session"],
 	}
 }
 

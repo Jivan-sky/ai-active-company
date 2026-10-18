@@ -45,6 +45,9 @@ type AgentView struct {
 	TaskID       string   `json:"task_id,omitempty"`
 	TaskTitle    string   `json:"task_title,omitempty"`
 	Note         string   `json:"note,omitempty"`
+	Session      string   `json:"session,omitempty"`
+	RunningTasks int      `json:"running_tasks"`
+	QueuedTasks  int      `json:"queued_tasks"`
 }
 
 // AgentsView 是 `/api/agents` 的形状（schema = anc.agents/v1）。
@@ -100,10 +103,20 @@ func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
 
 	// 任务标题：只在热层接上时补。补不到就留空，不拿项目名冒充「正在做」。
 	tasks := map[string]hot.State{}
+	type taskCount struct{ running, queued int }
+	counts := map[string]taskCount{}
 	if s.Hot != nil {
 		if list, terr := s.Hot.List(); terr == nil {
 			for _, t := range list {
 				tasks[t.ID] = t
+				c := counts[t.To]
+				switch t.Status {
+				case "running":
+					c.running++
+				case "queued":
+					c.queued++
+				}
+				counts[t.To] = c
 			}
 		}
 	}
@@ -128,6 +141,7 @@ func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
 			e.Status = h.Status
 			e.TaskID = h.TaskID
 			e.Note = h.Note
+			e.Session = h.Session
 			if age, has := h.Age(now); has {
 				secs := int64(age / time.Second)
 				e.AgeSecs = &secs
@@ -141,6 +155,8 @@ func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
 				e.TaskTitle = t.Title
 			}
 		}
+		c := counts[a.Slug]
+		e.RunningTasks, e.QueuedTasks = c.running, c.queued
 		if e.Online {
 			view.Online++
 		}

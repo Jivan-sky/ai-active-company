@@ -14,6 +14,7 @@ type fakeBeatStore struct {
 	got   hot.AgentHeartbeat
 	err   error
 	stale time.Duration
+	has   bool
 }
 
 func (f *fakeBeatStore) BeatAgent(h hot.AgentHeartbeat) (hot.AgentHeartbeat, error) {
@@ -25,6 +26,9 @@ func (f *fakeBeatStore) BeatAgent(h hot.AgentHeartbeat) (hot.AgentHeartbeat, err
 }
 func (f *fakeBeatStore) ListAgents() ([]hot.AgentHeartbeat, error) { return nil, f.err }
 func (f *fakeBeatStore) AgentStale() time.Duration                 { return f.stale }
+func (f *fakeBeatStore) GetAgent(string) (hot.AgentHeartbeat, bool, error) {
+	return f.got, f.has, f.err
+}
 
 func beatHarness(t *testing.T) (http.Handler, *envelopeIngress, *fakeBeatStore) {
 	t.Helper()

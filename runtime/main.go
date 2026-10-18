@@ -129,6 +129,8 @@ func main() {
 		os.Exit(cmdHot(args))
 	case "agent":
 		os.Exit(cmdAgent(args))
+	case "task":
+		os.Exit(cmdTask(args))
 	case "approvals":
 		os.Exit(cmdApprovals(args))
 	case "envelope":
@@ -200,6 +202,7 @@ func usage() {
    anc hot ping|put|ls|claim|release|drop|done
                                      「进行中」的热层：状态是当前值，不是历史（达标落库，进行中放这里）
    anc agent beat|ls <vault>          业务 agent 心跳与在线态（在线 ≠ 最近调用）
+   anc task add|pull|ack|ls <vault>   拉取式任务队列（ANC 只入队，agent 自己 pull）
    anc approvals add|ls|decide|card|card-action <vault>
                                       提案的待批队列、卡片与「点头」（审批的落点：看板 / 飞书卡片走同一个入口）
                                       卡片长什么样是数据（--frame），值是现算的（谁提的 / 属于谁 / 该谁批）
