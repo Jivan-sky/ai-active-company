@@ -41,7 +41,8 @@ const (
 	// DefaultTTL 是状态条目的默认存活时长：0 = 不失效。
 	// 理由：一件事还没做完就过期消失，等于把「进行中」变成「不存在」。
 	// 真要按客户的项目周期收口，那是配置项，不是这里的死值。
-	DefaultTTL = time.Duration(0)
+	DefaultTTL        = time.Duration(0)
+	DefaultAgentStale = 2 * time.Minute
 )
 
 // State 是「一件进行中的事」的当前态。
@@ -175,3 +176,77 @@ func (s State) Age(now time.Time) (time.Duration, bool) {
 	}
 	return now.Sub(t), true
 }
+
+// AgentHeartbeat 是业务 agent 的「当前在线态」。
+//
+// 它和 State 是两件事：State 讲「一件进行中的事」，心跳讲「一个 agent 现在还在不在」。
+// 所以它单占一个命名空间（<prefix>:agent:<slug>），不进任务列表的 SCAN。
+//
+// 一条心跳只在「最后一次见到它」这个意义上是当前值：过期不删，只按 AgentStale 打标，
+// 让看板能说「最后心跳在 X 分钟前」，而不是把记录抹成「从未存在」。
+type AgentHeartbeat struct {
+	Slug   string // business agent 的 slug（agents.md 的 slug）—— 身份的锚点
+	Status string // 自报状态：running / idle / blocked / failed …（认不出的照收，不在这里造词）
+	TaskID string // 当前在做的 task id（可选；不校验存不存在，看板能对上标题就显示）
+	Note   string // 一句话说明
+	AsOf   string // RFC3339：最后一次心跳的时刻
+}
+
+// Fields 转成热层里那份 hash。空值也照写（同 State.Fields 的理由）。
+func (h AgentHeartbeat) Fields() map[string]string {
+	return map[string]string{
+		"slug":    h.Slug,
+		"status":  h.Status,
+		"task_id": h.TaskID,
+		"note":    h.Note,
+		"as_of":   h.AsOf,
+	}
+}
+
+// AgentHeartbeatFromFields 是 Fields 的逆；认不出的字段丢掉不算错。
+func AgentHeartbeatFromFields(m map[string]string) AgentHeartbeat {
+	return AgentHeartbeat{
+		Slug:   m["slug"],
+		Status: m["status"],
+		TaskID: m["task_id"],
+		Note:   m["note"],
+		AsOf:   m["as_of"],
+	}
+}
+
+// Time 解析 AsOf。读不懂返回 false —— 调用方据此说「时间读不懂」，不把它当成刚刚心跳。
+func (h AgentHeartbeat) Time() (time.Time, bool) {
+	t, err := time.Parse(time.RFC3339, strings.TrimSpace(h.AsOf))
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t, true
+}
+
+// Age 报「最后一次心跳离现在多久」。
+func (h AgentHeartbeat) Age(now time.Time) (time.Duration, bool) {
+	t, ok := h.Time()
+	if !ok {
+		return 0, false
+	}
+	return now.Sub(t), true
+}
+
+// Stale 是新鲜度判据：超过 after 没心跳 = 不算在线。after <= 0 = 不判。
+// **只画标记，不拦、不删。**
+func (h AgentHeartbeat) Stale(now time.Time, after time.Duration) bool {
+	if after <= 0 {
+		return false
+	}
+	t, ok := h.Time()
+	if !ok {
+		return true // 时间读不懂：按不新鲜算，让人去看
+	}
+	return now.Sub(t) > after
+}
+
+// AgentKey 是心跳的 key：<prefix>:agent:<slug>。
+// 与 task / lease 各占一个命名空间 —— 列举任务时不会把心跳一起捞出来。
+func AgentKey(prefix, slug string) string { return prefix + ":agent:" + slug }
+
+func agentScanPattern(prefix string) string { return prefix + ":agent:*" }

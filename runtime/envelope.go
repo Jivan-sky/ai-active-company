@@ -187,11 +187,13 @@ const envelopeServeUsage = `anc envelope serve —— 起 ANC 的接入面（MCP
 用法：
   anc envelope serve <vault 目录> [--addr 127.0.0.1:8791] [--data <data 目录>]
                                      [--hot-addr 127.0.0.1:6379] [--hot-prefix anc]
+                                     [--agent-stale 2m]
 
 harness（Claude Code / Codex / …）通过 MCP 调工具。桥的两半都在这一个入口上：
 
   入站（agent 递给 ANC）  anc_send_envelope(who, on_behalf_of?, kind?, body, scope_domain?, scope_project?, refs?, needs?)
   出站（agent 向 ANC 要）  anc_read_context(who, on_behalf_of?, domain?)
+  心跳（agent 报在线）    anc_agent_heartbeat(who, status?, task_id?, note?)
 
 入站服务端做的事，一件不多：
   1 读工具参数 → 拼成一份信封 JSON → **走和线上同一条 Parse**（不给工具路径单开一套校验）
@@ -229,6 +231,15 @@ type hotLister interface {
 	List() ([]hot.State, error)
 }
 
+// agentHeartbeats 是业务 agent 的在线态：写一次心跳、读最后心跳、回新鲜度阈值。
+// 与 hotLister 分开：读出口只关心任务，心跳是另一条路径 —— 混成一个接口，
+// 会逼着只想要读出口的实现也去做写口。
+type agentHeartbeats interface {
+	BeatAgent(hot.AgentHeartbeat) (hot.AgentHeartbeat, error)
+	ListAgents() ([]hot.AgentHeartbeat, error)
+	AgentStale() time.Duration
+}
+
 // envelopeIngress 是接入面本身：一个 vault + 一个 data 目录 + 一个热层 + 一个时钟。
 type envelopeIngress struct {
 	Vault   string
@@ -237,6 +248,8 @@ type envelopeIngress struct {
 	// Hot 是热层（「派给我的待办」从这儿来）。nil = 这一块没接上：读出口如实报缺，
 	// 不拿空清单冒充「没人派给你」（同 `anc board serve --hot-addr` 的口径）。
 	Hot hotLister
+	// Agents 是同一个热层的心跳视角。nil = 没接上：心跳工具如实报错，不假装记下了。
+	Agents agentHeartbeats
 }
 
 func (g *envelopeIngress) now() time.Time {
@@ -289,9 +302,97 @@ func (g *envelopeIngress) srv() *mcp.Server {
 				"required": []string{"who"},
 			},
 			Call: g.readContext,
+		}, {
+			Name: "anc_agent_heartbeat",
+			Description: "业务 agent 报一次心跳（**写当前态**，不是历史）：谁还在线、现在在干什么。" +
+				"who 必须是 agents.md 里真实存在的业务 agent（slug 或 name）—— 不存在的身份不收，" +
+				"免得看板上多出一个查无此人的幽灵。" +
+				"心跳过期不删，按服务端阈值打「不新鲜」标记；看板据此区分「在线」与「最后心跳」。",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"who":     map[string]any{"type": "string", "description": "业务 agent 的 slug 或 name（agents.md 里必须存在）"},
+					"status":  map[string]any{"type": "string", "description": "可选：running / idle / blocked / failed（认不出的词照收）"},
+					"task_id": map[string]any{"type": "string", "description": "可选：当前在做的 task id"},
+					"note":    map[string]any{"type": "string", "description": "可选：一句话说明"},
+				},
+				"required": []string{"who"},
+			},
+			Call: g.agentHeartbeat,
 		}},
 		Log: func(format string, a ...any) { fmt.Printf("  · "+format+"\n", a...) },
 	}
+}
+
+// agentHeartbeat 收一次业务 agent 的心跳。
+//
+// 身份先过 agents.md：只有**已登记**的业务 agent 才能报心跳。理由很直接 ——
+// 看板上的「在线」若允许自报，任何人都能把一个查无此人的名字点亮；那一条绿灯就是假的。
+func (g *envelopeIngress) agentHeartbeat(args map[string]any) (string, bool) {
+	who := strings.TrimSpace(strArg(args, "who"))
+	if who == "" {
+		return "心跳需要 who（agents.md 里的 slug 或 name）", true
+	}
+	if g.Agents == nil {
+		return "热层没接上 —— 心跳无处可写（起接入面时给 --hot-addr 或设 ANC_HOT_ADDR）", true
+	}
+	o, err := org.Load(g.Vault)
+	if err != nil {
+		return "真相源加载失败，认不出这个 agent：" + err.Error() + "\n（先修 org：anc org check <vault>）", true
+	}
+	a, why := findAgent(o, who)
+	if why != "" {
+		return why, true
+	}
+	h, err := g.Agents.BeatAgent(hot.AgentHeartbeat{
+		Slug:   a.Slug,
+		Status: strings.TrimSpace(strArg(args, "status")),
+		TaskID: strings.TrimSpace(strArg(args, "task_id")),
+		Note:   strings.TrimSpace(strArg(args, "note")),
+	})
+	if err != nil {
+		return "心跳没记上：" + err.Error(), true
+	}
+	return mustJSON(map[string]any{
+		"ok":               true,
+		"slug":             h.Slug,
+		"name":             a.Name,
+		"domain":           a.Domain,
+		"role":             a.Role,
+		"status":           h.Status,
+		"task_id":          h.TaskID,
+		"note":             h.Note,
+		"as_of":            h.AsOf,
+		"stale_after_secs": int64(g.Agents.AgentStale() / time.Second),
+	}), false
+}
+
+// findAgent 把调用方写的身份解成一个已登记的业务 agent。
+// 先认 slug，再认 name；都认不出就回一句「有哪些」—— 不让它去猜。
+func findAgent(o *org.Org, who string) (org.Agent, string) {
+	for _, a := range o.Agents {
+		if a.Slug == who {
+			return a, ""
+		}
+	}
+	for _, a := range o.Agents {
+		if a.Name == who {
+			return a, ""
+		}
+	}
+	for _, a := range o.Agents {
+		if strings.EqualFold(a.Slug, who) || strings.EqualFold(a.Name, who) {
+			return a, ""
+		}
+	}
+	slugs := make([]string, 0, len(o.Agents))
+	for _, a := range o.Agents {
+		slugs = append(slugs, a.Slug)
+	}
+	if len(slugs) == 0 {
+		return org.Agent{}, "agents.md 里没有业务 agent —— 这个身份查无此人"
+	}
+	return org.Agent{}, fmt.Sprintf("agents.md 里没有 %q —— 身份不许自报。现有：%s", who, strings.Join(slugs, "、"))
 }
 
 // sendEnvelope 收一封信：拼信封 → Parse → Bind → 落盘 → 回六问六答。
@@ -487,6 +588,7 @@ func cmdEnvelopeServe(args []string) int {
 	data := fs.String("data", "", "运行态 data 目录（信封日志落这儿）")
 	hotAddr := fs.String("hot-addr", "", "热层地址（读出口的「派给我的待办」用它；默认 "+hot.DefaultAddr+"；也可用 ANC_HOT_ADDR）")
 	hotPrefix := fs.String("hot-prefix", "", "热层 key 前缀（默认 "+hot.DefaultPrefix+"；也可用 ANC_HOT_PREFIX）")
+	agentStale := fs.Duration("agent-stale", 0, "多久没心跳不算在线（默认 "+hot.DefaultAgentStale.String()+"；也可用 ANC_AGENT_STALE）")
 	flagArgs, posArgs := splitArgs(args, map[string]bool{})
 	if err := fs.Parse(flagArgs); err != nil {
 		return 2
@@ -545,11 +647,12 @@ func cmdEnvelopeServe(args []string) int {
 	// 只在接上了才往接口里塞：`var st *hot.Store` 直接塞进去会变成一个
 	// 「非 nil 的接口、里面是个 nil 指针」—— `g.Hot == nil` 于是判不出来，
 	// 读出口会走进 (*hot.Store)(nil).List() 当场 panic。没接上就让它一直是 nil。
-	var hotStore hotLister
+	var hotStore *hot.Store
 	hotAddrShown := firstNonEmpty(*hotAddr, os.Getenv("ANC_HOT_ADDR"), hot.DefaultAddr)
 	if st, err := hot.Open(hot.Config{
-		Addr:   hotAddrShown,
-		Prefix: firstNonEmpty(*hotPrefix, os.Getenv("ANC_HOT_PREFIX")),
+		Addr:       hotAddrShown,
+		Prefix:     firstNonEmpty(*hotPrefix, os.Getenv("ANC_HOT_PREFIX")),
+		AgentStale: firstDuration(*agentStale, envDuration("ANC_AGENT_STALE")),
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "注意：热层没接上（%v）—— 读出口里「派给我的待办」那一段会如实报缺。\n", err)
 	} else {
@@ -557,12 +660,18 @@ func cmdEnvelopeServe(args []string) int {
 		hotStore = st
 	}
 
-	g := &envelopeIngress{Vault: vault, DataDir: dataDir, Now: time.Now, Hot: hotStore}
+	g := &envelopeIngress{Vault: vault, DataDir: dataDir, Now: time.Now}
+	if hotStore != nil {
+		// 同一个底层对象、两条视角：任务（读出口）与心跳（agent 在线态）。
+		// 只在接上时才塞接口 —— 否则会变成「非 nil 的接口里装着 nil 指针」（见上面那段注释）。
+		g.Hot = hotStore
+		g.Agents = hotStore
+	}
 	fmt.Printf("ANC 接入面已起（MCP · streamable HTTP · 无状态）：\n")
 	fmt.Printf("  地址   http://%s/mcp\n", urlHost)
 	fmt.Printf("  vault  %s\n", vault)
 	fmt.Printf("  日志   %s\n", filepath.Join(dataDir, envelope.DirName))
-	fmt.Printf("  工具   anc_send_envelope（递进来）· anc_read_context（要出去）\n")
+	fmt.Printf("  工具   anc_send_envelope（递进来）· anc_read_context（要出去）· anc_agent_heartbeat（报在线）\n")
 	fmt.Printf("  热层   %s（「派给我的待办」走它；没接上就如实报缺，不编）\n", hotAddrShown)
 	fmt.Printf("  接入   claude mcp add --transport http anc http://%s/mcp\n", urlHost)
 	fmt.Printf("  退出   Ctrl-C\n\n")

@@ -24,6 +24,7 @@ const boardServeUsage = `anc board serve —— 起 ANC 看板（默认只读；
 用法：
   anc board serve <vault 目录> [--addr 127.0.0.1:8787] [--data <data 目录>]
                                  [--hot-addr 127.0.0.1:6379] [--hot-prefix anc]
+                                 [--agent-stale 2m]
                                  [--ui-dir <前端目录>]
 
 看板读的是真相源（vault）的**实时投影**：改完 vault 刷新即见，不缓存。
@@ -37,6 +38,8 @@ const boardServeUsage = `anc board serve —— 起 ANC 看板（默认只读；
   --hot-addr <地址>    热层地址（「待批」页用）；默认 127.0.0.1:6379，也可用 ANC_HOT_ADDR。
                        接不上**不拦看板**：那页会如实报「没接上」，不拿空队列冒充「没人提」。
   --hot-prefix <前缀>  热层 key 前缀；默认 anc，也可用 ANC_HOT_PREFIX。
+  --agent-stale <时长> 多久没心跳不算在线；默认 2m，也可用 ANC_AGENT_STALE。
+                       它只打「不新鲜」标记，**不删心跳** —— 最后心跳时间仍会留着。
   --ui-dir <目录>     前端静态资源目录；默认用**内嵌的那份**。指到磁盘上的一份就覆盖它 ——
                        这一项只换「前端文件从哪来」，不动路由与只读口径。目录写错**直接退**。
 
@@ -61,6 +64,7 @@ func cmdBoardServe(args []string) int {
 	data := fs.String("data", "", "gateway data 目录（运行态页用）")
 	hotAddr := fs.String("hot-addr", "", "热层地址（待批页用；默认 "+hot.DefaultAddr+"；也可用 ANC_HOT_ADDR）")
 	hotPrefix := fs.String("hot-prefix", "", "热层 key 前缀（默认 "+hot.DefaultPrefix+"；也可用 ANC_HOT_PREFIX）")
+	agentStale := fs.Duration("agent-stale", 0, "多久没心跳不算在线（默认 "+hot.DefaultAgentStale.String()+"；也可用 ANC_AGENT_STALE）")
 	uiDir := fs.String("ui-dir", "", "前端静态资源目录（默认用内嵌的那份）")
 	flagArgs, posArgs := splitArgs(args, map[string]bool{})
 	if err := fs.Parse(flagArgs); err != nil {
@@ -136,14 +140,16 @@ func cmdBoardServe(args []string) int {
 	// 看不到待批不等于真相源坏了，投影照样该看得到。
 	bs := &board.Server{Vault: abs, DataDir: dataDir, Now: time.Now, UIFS: uiFS}
 	if st, err := hot.Open(hot.Config{
-		Addr:   firstNonEmpty(*hotAddr, os.Getenv("ANC_HOT_ADDR"), hot.DefaultAddr),
-		Prefix: firstNonEmpty(*hotPrefix, os.Getenv("ANC_HOT_PREFIX")),
+		Addr:       firstNonEmpty(*hotAddr, os.Getenv("ANC_HOT_ADDR"), hot.DefaultAddr),
+		Prefix:     firstNonEmpty(*hotPrefix, os.Getenv("ANC_HOT_PREFIX")),
+		AgentStale: firstDuration(*agentStale, envDuration("ANC_AGENT_STALE")),
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "注意：热层没接上（%v）—— 「待批」与「沉淀」两页都会如实报没接上。\n", err)
 	} else {
 		defer st.Close()
 		bs.Approvals = st
 		bs.Hot = st
+		bs.Agents = st
 	}
 
 	fmt.Printf("ANC 看板已起（默认只读）：\n")
@@ -163,6 +169,11 @@ func cmdBoardServe(args []string) int {
 		fmt.Printf("  待批   没接上（--hot-addr 或 ANC_HOT_ADDR）\n")
 	} else {
 		fmt.Printf("  待批   http://%s/#/approvals（热层已接上）\n", urlHost)
+	}
+	if bs.Agents == nil {
+		fmt.Printf("  Agent  心跳没接上（/api/agents 会如实报 wired=false）\n")
+	} else {
+		fmt.Printf("  Agent  心跳已接入（%s 没心跳不算在线）\n", bs.Agents.AgentStale())
 	}
 	fmt.Printf("  写口   只有一处：POST http://%s%s（审批信号；只留痕，不写真相源）\n", urlHost, board.WritePath)
 	fmt.Printf("  退出   Ctrl-C\n\n")

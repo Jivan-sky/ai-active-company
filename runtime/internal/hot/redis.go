@@ -12,10 +12,11 @@ import (
 
 // Config 是热层的**外置配置**（地址、前缀、TTL、超时全在这里，代码里不留死值）。
 type Config struct {
-	Addr    string        // 默认 DefaultAddr
-	Prefix  string        // 默认 DefaultPrefix
-	TTL     time.Duration // 状态条目存活时长；0 = 不失效（默认）
-	Timeout time.Duration // 连/读兜底超时；0 = DefaultTimeout
+	Addr       string        // 默认 DefaultAddr
+	Prefix     string        // 默认 DefaultPrefix
+	TTL        time.Duration // 状态条目存活时长；0 = 不失效（默认）
+	Timeout    time.Duration // 连/读兜底超时；0 = DefaultTimeout
+	AgentStale time.Duration // 多久没心跳不算在线；0 = DefaultAgentStale（只打标，不删）
 }
 
 // Store 是热层的一个介质实现。它**不是**真相源（见包注释 1）。
@@ -23,11 +24,12 @@ type Store struct {
 	mu   sync.Mutex // 只护 conn 这一个字段 —— 换连接时，别的调用不该拿到半截的它
 	conn *respConn
 	// dial 是「再拨一条」的办法；nil = 这条 Store 不自己拨号（测试注入连接时就是这种）。
-	dial    func() (io.ReadWriteCloser, error)
-	timeout time.Duration
-	prefix  string
-	ttl     time.Duration
-	now     func() time.Time
+	dial       func() (io.ReadWriteCloser, error)
+	timeout    time.Duration
+	prefix     string
+	ttl        time.Duration
+	agentStale time.Duration
+	now        func() time.Time
 }
 
 // errNoDial 是「这条 Store 不会自己拨号」：newStore 直接接了条连接时（测试注入）就是这种。
@@ -62,17 +64,26 @@ func newStore(rw io.ReadWriteCloser, cfg Config) *Store {
 		prefix = DefaultPrefix
 	}
 	return &Store{
-		conn:    newRespConn(rw, cfg.Timeout),
-		timeout: cfg.Timeout,
-		prefix:  prefix,
-		ttl:     cfg.TTL,
-		now:     time.Now,
+		conn:       newRespConn(rw, cfg.Timeout),
+		timeout:    cfg.Timeout,
+		prefix:     prefix,
+		ttl:        cfg.TTL,
+		agentStale: cfg.AgentStale,
+		now:        time.Now,
 	}
 }
 
 // Prefix / TTL 回显实际生效的配置值 —— 别让人猜它连的是哪儿、TTL 是不是生效了。
 func (st *Store) Prefix() string     { return st.prefix }
 func (st *Store) TTL() time.Duration { return st.ttl }
+
+// AgentStale 回显实际生效的心跳新鲜度阈值（0 = 不判）。
+func (st *Store) AgentStale() time.Duration {
+	if st.agentStale > 0 {
+		return st.agentStale
+	}
+	return DefaultAgentStale
+}
 
 // Close 关掉现在手里的那条连接。
 func (st *Store) Close() error {
@@ -224,6 +235,77 @@ func (st *Store) List() ([]State, error) {
 		}
 	}
 	SortByAge(out)
+	return out, nil
+}
+
+// BeatAgent 记一次心跳：覆写该 agent 的当前态，并把 as_of 推到「现在」。
+//
+// 心跳**不跟任务 TTL 走**：任务 TTL 是「这件事到点该走」，心跳是「最后见到它的证据」。
+// 所以这里始终 PERSIST —— 过期与否由 AgentStale 打标，不由 Redis 删记录。
+func (st *Store) BeatAgent(h AgentHeartbeat) (AgentHeartbeat, error) {
+	slug := strings.TrimSpace(h.Slug)
+	if slug == "" {
+		return AgentHeartbeat{}, errors.New("hot: 心跳需要 agent slug")
+	}
+	h.Slug = slug
+	if strings.TrimSpace(h.AsOf) == "" {
+		h.AsOf = st.now().Format(time.RFC3339)
+	}
+	key := AgentKey(st.prefix, slug)
+	args := []string{"HSET", key}
+	for k, v := range h.Fields() {
+		args = append(args, k, v)
+	}
+	if _, err := st.do(args...); err != nil {
+		return AgentHeartbeat{}, err
+	}
+	if _, err := st.do("PERSIST", key); err != nil {
+		return AgentHeartbeat{}, err
+	}
+	return h, nil
+}
+
+// GetAgent 读一个 agent 的最后心跳。第二个返回值是「有没有」—— 没有不算错：
+// 它可能只是还没接上心跳，不能据此说它不存在。
+func (st *Store) GetAgent(slug string) (AgentHeartbeat, bool, error) {
+	slug = strings.TrimSpace(slug)
+	if slug == "" {
+		return AgentHeartbeat{}, false, errors.New("hot: 读心跳需要 agent slug")
+	}
+	m, err := st.hash(AgentKey(st.prefix, slug))
+	if err != nil {
+		return AgentHeartbeat{}, false, err
+	}
+	if len(m) == 0 {
+		return AgentHeartbeat{}, false, nil
+	}
+	return AgentHeartbeatFromFields(m), true, nil
+}
+
+// ListAgents 列举所有心跳（SCAN <prefix>:agent:*，不碰 task / lease）。
+// 排序交给调用方：看板按在线、最近心跳排；CLI 按 slug 排。
+func (st *Store) ListAgents() ([]AgentHeartbeat, error) {
+	if st == nil {
+		return nil, errors.New("热层没开：Store 是 nil —— 调用方把「没接上」写成了「接上了」")
+	}
+	keys, err := st.scan(agentScanPattern(st.prefix))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]AgentHeartbeat, 0, len(keys))
+	for _, k := range keys {
+		slug := strings.TrimPrefix(k, st.prefix+":agent:")
+		if slug == "" || slug == k {
+			continue
+		}
+		h, ok, err := st.GetAgent(slug)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			out = append(out, h)
+		}
+	}
 	return out, nil
 }
 

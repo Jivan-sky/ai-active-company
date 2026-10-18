@@ -43,6 +43,10 @@ type Server struct {
 	// 不把「这一层现在什么情况」硬塞进 approvals.Queue 那个队列接口。
 	Hot HotLayer
 
+	// Agents 是同一个热层的**心跳**视角（`/api/agents`）。
+	// nil = 没接上：视图如实回 wired=false，不拿「全是离线」冒充真实状态。
+	Agents AgentLayer
+
 	// UIFS 是前端静态资源的**根**。nil = 用内嵌的那份（默认）。
 	//
 	// 内嵌是默认，不是唯一：现场想换一份前端（改样式、临时补一页、拿真机产物核界面）
@@ -72,6 +76,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/audit", s.handleAudit)
 	mux.HandleFunc("/api/approvals", s.handleApprovals)
 	mux.HandleFunc("/api/hot", s.handleHot)
+	mux.HandleFunc("/api/agents", s.handleAgents)
 	mux.HandleFunc("/api/context", s.handleContext)
 	mux.HandleFunc("/api/grants", s.handleGrants)
 	mux.HandleFunc(WritePath, s.handleApprovalsDecide)

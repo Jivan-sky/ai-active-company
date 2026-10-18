@@ -110,6 +110,30 @@ func firstNonEmpty(vals ...string) string {
 	return ""
 }
 
+// envDuration 读一个可选的环境变量时长；没设或读不懂都回 0（交给调用方落默认值）。
+// 读不懂时不在这里报错：调用方有一处能说清「这个值没生效」，比散落各处的静默兜底强。
+func envDuration(name string) time.Duration {
+	v := strings.TrimSpace(os.Getenv(name))
+	if v == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return 0
+	}
+	return d
+}
+
+// firstDuration 取第一个 > 0 的时长；全都 <= 0 就回 0（交给下层落默认值）。
+func firstDuration(vals ...time.Duration) time.Duration {
+	for _, d := range vals {
+		if d > 0 {
+			return d
+		}
+	}
+	return 0
+}
+
 // ---------- 子命令 ----------
 
 func cmdHotPing(args []string) int {

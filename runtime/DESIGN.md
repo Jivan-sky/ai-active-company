@@ -885,7 +885,7 @@ Codex 走 `-c mcp_servers.anc.url=...`。两个都是「用完就走」。
 | 文件 | 钉住什么 | 条数 |
 |---|---|---|
 | `internal/mcp/conformance_test.go` | 协议**形状**（用假工具）：initialize 三字段齐全 · `id` 原样回 · `tools/list` 的 `inputSchema` 是 JSON Schema 对象 · `tools/call` 的 `content[]` + `isError` · 缺 `arguments` 要传给工具**空 map** · 批量请求回 `-32700` · 响应 `Content-Type` 是 `application/json` | 7 |
-| `mcp_conformance_test.go`（包外，走真 HTTP） | **真工具面**：恰两个工具且顺序固定（`anc_send_envelope` / `anc_read_context`）· description 非空 · `inputSchema.type=object` · 每个参数有 `type` + `description` · `required` 必须指向真实存在的参数 | 1 |
+| `mcp_conformance_test.go`（包外，走真 HTTP） | **真工具面**：恰三个工具且顺序固定（`anc_send_envelope` / `anc_read_context` / `anc_agent_heartbeat`）· description 非空 · `inputSchema.type=object` · 每个参数有 `type` + `description` · `required` 必须指向真实存在的参数 | 1 |
 
 **对拍当场抓到一个真缺陷**：`handleCall` 原来是「先 `t.Call(args)`、后补空 map」——
 缺 `arguments` 时工具收到 `nil` map，工具里只要写一次 `args[...]` 就是 **nil map panic**。
@@ -3513,6 +3513,26 @@ D5 在 2026-10-07 就拍了 (a)「合成一棵树、以客户库为根」，但 
 **实测**：单测三条（空 / 纯空白 / 空后真回复）；真二进制 + 临时 unix socket + 构造会话，
 `anc probe` 输出「🟡 demo-alice 最后一轮 assistant 记录是空内容 …」、退出码 1（不进绿）。
 全量 `gofmt -l` 空 · `go vet` 空 · `go test -count=1 ./...` 20 包全绿。
+
+### 7.1.64 业务 agent 心跳：在线只看心跳，「最近调用」不许冒充（2026-10-18）
+
+**问题**：成员卡上的「在线」原来借运行态 bot 的绿点；业务 agent 没有 bot，就只能拿审计里的
+「最近调用」顶。最近调用是历史事实，证明不了此刻在跑 —— 看板会假绿。
+
+**落点**：
+- 热层新增独立命名空间 `<prefix>:agent:<slug>`（`hot.AgentHeartbeat`）：
+  `status / task_id / note / as_of`。心跳**不跟任务 TTL 走**，始终 `PERSIST`：
+  过期只按 `--agent-stale`（默认 2m，`ANC_AGENT_STALE` 可改）打标，不删「最后心跳」。
+- MCP 新增 `anc_agent_heartbeat(who, status?, task_id?, note?)`：身份先过 `agents.md`，
+  查无此人不收 —— 否则看板能被点亮一个幽灵。热层没接上就 `isError=true`。
+- 看板新增 `GET /api/agents`（`anc.agents/v1`）：注册表来自 `agents.md`，在线态来自心跳；
+  `wired=false` 表示心跳层没接上（不是「全员离线」），`last_seen` 空表示「从未心跳」。
+- 前端成员卡的「在线」改吃 `/api/agents`；「最近调用（审计）」继续单列，两件事分开写。
+
+**实测**：`go test ./...` 全绿 · `npm run check` 通过 · 真 Redis（测试前缀 `anc-agent-test`）：
+`anc agent beat` 后 `/api/agents` 报 `online=1/total=7` 且带任务标题；MCP 真 JSON-RPC 调
+`anc_agent_heartbeat` 成功，`who=ghostbot` 返回 `isError=true`；把阈值压到 1s 后 CLI 正确报
+「离线（N 秒前）」并保留最后心跳。
 
 ## 8. 与 SPEC 的映射
 

@@ -166,6 +166,21 @@ type AgentRow = {
   slug: string; name: string; description: string; domain: string; role: string;
   harness: string; model: string; tools: string[]; wired: boolean;
 };
+// 业务 agent 的运行态（`/api/agents`，schema = anc.agents/v1）。
+// 它与 AgentRow 是两件事：那份讲**登记了什么**，这份讲**现在谁还在心跳**。
+// online 只由心跳推出；last_seen 空 = 从未心跳，不是「离线很久」。
+type LiveAgent = {
+  slug: string; name: string; domain?: string; domain_name?: string; role?: string;
+  harness?: string; model?: string; credentialed: boolean;
+  online: boolean; stale: boolean;
+  last_seen?: string; age_secs?: number;
+  status?: string; task_id?: string; task_title?: string; note?: string;
+};
+type AgentsView = {
+  schema: string; wired: boolean; why?: string; error?: string;
+  stale_after_secs: number; total: number; online: number;
+  entries: LiveAgent[]; note: string;
+};
 type RoutingRow = { dir: string; summary: string };
 type BoardView = {
   schema: string; generated_at: string; company: Company;
@@ -367,6 +382,7 @@ type ContextView = {
 
 type Data = {
   board: BoardView | null; issues: Issues;
+  agents: AgentsView | null; agentsErr: string;
   hot: HotView | null; hotErr: string;
   runtime: RuntimeView | null; runtimeErr: string;
   dataflow: DataflowView | null; dataflowErr: string;
@@ -609,7 +625,7 @@ function contract<T extends { schema?: string }>(res: Fetched<T>, label: string)
 }
 
 async function fetchData(): Promise<Data> {
-  const [boardRes, issuesRes, runtimeRes, dataflowRes, assetsRes, timelineRes, auditRes, approvalsRes, hotRes, ctxRes, grantsRes] = await Promise.all([
+  const [boardRes, issuesRes, runtimeRes, dataflowRes, assetsRes, timelineRes, auditRes, approvalsRes, hotRes, agentsRes, ctxRes, grantsRes] = await Promise.all([
     getJSON<BoardView & { error?: string }>("/api/board"),
     getJSON<Issues>("/api/issues"),
     getJSON<RuntimeView>("/api/runtime"),
@@ -621,6 +637,8 @@ async function fetchData(): Promise<Data> {
     getJSON<AuditView>("/api/audit?limit=500"),
     getJSON<ApprovalView>("/api/approvals"),
     getJSON<HotView>("/api/hot"),
+    // 在线态单开一条：它不是真相源投影，也不该混进任务热层。
+    getJSON<AgentsView>("/api/agents"),
     // 上下文那一页：选中的人进 hash（#/context?who=alice），所以取数也照 URL 来 ——
     // 刷新、把链接发给别人、前进后退，看到的都是同一个人。
     getJSON<ContextView>("/api/context" + ctxQuery()),
@@ -635,12 +653,14 @@ async function fetchData(): Promise<Data> {
   const au = contract(auditRes, "审计");
   const ap = contract(approvalsRes, "待批队列");
   const ho = contract(hotRes, "热层");
+  const ag = contract(agentsRes, "Agent 在线态");
   const cx = contract(ctxRes, "工作上下文");
   const gr = contract(grantsRes, "授权表");
   const schema = boardRes.body?.schema;
   if (boardRes.body && typeof schema === "string" && schema !== "") {
     return {
       board: boardRes.body, issues, err: "",
+      agents: ag.v, agentsErr: ag.err,
       hot: ho.v, hotErr: ho.err,
       context: cx.v, contextErr: cx.err,
       grants: gr.v, grantsErr: gr.err,
@@ -655,6 +675,7 @@ async function fetchData(): Promise<Data> {
   const why = boardRes.body?.error ?? boardRes.err ?? ("看板数据读取失败（HTTP " + boardRes.status + "）");
   return {
     board: null, issues, err: why,
+    agents: ag.v, agentsErr: ag.err,
     hot: ho.v, hotErr: ho.err,
     context: cx.v, contextErr: cx.err,
     grants: gr.v, grantsErr: gr.err,
@@ -848,8 +869,8 @@ function agentWork(d: Data, slug: string): { title: string; status: string; sour
   return null;
 }
 
-// 「在线」需要客户端心跳；现在没有。退一档用审计里**真的发生过**的调用记录：
-// 它只能说明「最近连过」，不能说明「此刻在跑」—— 标签必须这么写。
+// 「最近调用」来自审计：它只能说明「最近连过」，不能说明「此刻在跑」。
+// 在线判定只看 /api/agents 的心跳 —— 两件事在界面上必须分开写。
 function lastCall(d: Data, slug: string): AuditEntryView | null {
   if (!d.audit?.wired) return null;
   return d.audit.records.find((r) => r.actor === slug) ?? null;
@@ -866,17 +887,24 @@ function recentCallers(d: Data): Set<string> {
   return out;
 }
 
-// 成员名下 agent 的三档口径：接入 = agents.md 有 app_id；在线 = 运行态是绿；
-// 运行态没接上时 online 是 null —— 「不知道」不当 0。
+// 一个 agent 的最后心跳。心跳层没接上、读失败、或根本没这条 → null（不知道，不当离线）。
+function liveAgentOf(d: Data, slug: string): LiveAgent | null {
+  if (!d.agents?.wired || (d.agents.error ?? "") !== "") return null;
+  return d.agents.entries.find((x) => x.slug === slug) ?? null;
+}
+
+// 成员名下 agent 的三档口径：接入 = agents.md 有 app_id；在线 = 最近心跳在阈值内；
+// 心跳层没接上时 online 是 null —— 「不知道」不当 0。
 function memberAgentStats(d: Data, v: BoardView, m: Member): { total: number; wired: number; online: number | null; recent: number } {
   const links = agentsForMember(v, m);
   const wired = links.filter((x) => x.agent.wired).length;
   const seen = recentCallers(d);
   const recent = links.filter((x) => seen.has(x.agent.slug)).length;
-  if (!d.runtime || !d.runtime.wired || (d.runtime.error ?? "") !== "") {
+  const hbWired = d.agents?.wired === true && (d.agents.error ?? "") === "";
+  if (!hbWired) {
     return { total: links.length, wired, online: null, recent };
   }
-  const online = links.filter((x) => botStateOf(d, botProject(v, x.agent.slug)).cls.includes("ok")).length;
+  const online = links.filter((x) => liveAgentOf(d, x.agent.slug)?.online === true).length;
   return { total: links.length, wired, online, recent };
 }
 
@@ -1180,24 +1208,42 @@ function openMemberDrawer(d: Data, v: BoardView, m: Member): void {
         ),
         el("div", { class: "dg-col" },
           dcard("我的 Agent", stats.online === null
-              ? "接入 " + String(stats.wired) + " / 共 " + String(stats.total) + " · 在线未知（运行态未接） · 24h 内调用 " + String(stats.recent)
+              ? "接入 " + String(stats.wired) + " / 共 " + String(stats.total) + " · 在线未知（心跳未接） · 24h 内调用 " + String(stats.recent)
               : "在线 " + String(stats.online) + " / 共 " + String(stats.total) + " · 接入 " + String(stats.wired) + " · 24h 内调用 " + String(stats.recent),
             links.length === 0
               ? el("p", { class: "empty" }, "按「同岗位 / 同业务域」都挂不上 agent。")
               : el("div", { class: "dlist" }, ...links.map((x) => {
                   const st = botStateOf(d, botProject(v, x.agent.slug));
+                  const live = liveAgentOf(d, x.agent.slug);
                   const work = agentWork(d, x.agent.slug);
                   const call = lastCall(d, x.agent.slug);
                   const project = v.projects.find((p) => p.domain === x.agent.domain);
+                  const heartbeat = live === null
+                    ? "心跳状态未知"
+                    : live.online
+                      ? "心跳在线"
+                      : (live.last_seen ?? "") === ""
+                        ? "从未心跳"
+                        : "心跳离线（最后 " + sinceText(live.last_seen ?? "") + "）";
+                  const doing = live?.task_title
+                    ? " · 任务：" + live.task_title
+                    : (live?.task_id ?? "") !== ""
+                      ? " · 任务：" + live?.task_id
+                      : "";
                   return el("div", { class: "drow" },
-                    el("span", { class: st.cls }),
+                    el("span", { class: live?.online ? "dot ok" : "dot gray" }),
                     el("span", { class: "drow-main" },
                       el("b", {}, dash(x.agent.name || x.agent.slug) + " · " + dash(x.agent.harness || "默认 harness")),
                       el("small", { class: "wrap" }, dash(x.agent.slug)
                         + " · " + (x.agent.wired ? "已接入" : "未接凭据")
-                        + " · " + st.label
-                        + " · " + (call === null ? "无调用记录" : "最近调用 " + sinceText(call.at))
-                        + " · " + (work === null ? "当前没有进行中的任务" : "正在做：" + work.title + "（" + work.source + " / " + work.status + "）")),
+                        + " · " + heartbeat
+                        + ((live?.status ?? "") === "" ? "" : " · " + live?.status)
+                        + doing
+                        + " · 运行态 " + st.label
+                        + " · " + (call === null ? "无调用记录" : "最近调用 " + sinceText(call.at))),
+                      ((live?.note ?? "") === "" ? "" : el("small", { class: "wrap" }, "自报：" + live?.note)),
+                      el("small", { class: "wrap" },
+                        work === null ? "热层 / 时间线里没有正在做的任务" : "正在做：" + work.title + "（" + work.source + " / " + work.status + "）"),
                       project === undefined ? "" : el("small", { class: "wrap" }, "服务项目：" + dash(project.name))),
                     el("span", { class: "chip mono" }, x.why));
                 }))),
