@@ -61,7 +61,7 @@ func TestServerServesBoardJSON(t *testing.T) {
 	}
 }
 
-// 校验发现走 /api/issues，且**不并进投影契约**：anc.board/v1 只在成功时出现。
+// 校验发现走 /api/issues，且**不并进投影契约**：anc.board/v2 只在成功时出现。
 func TestServerIssues(t *testing.T) {
 	t.Run("干净 vault", func(t *testing.T) {
 		rec := get(t, newHandler(t, "domains"), "/api/issues")

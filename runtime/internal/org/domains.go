@@ -165,7 +165,7 @@ func (o *Org) routingDirs() []string {
 	return out
 }
 
-// WhoLabel 把域表 who（以及立项书 owner / members）里的**岗位**解成「岗位（人名）」。
+// WhoLabel 把域表 who（以及立项书 owner / members）里的**岗位**解成「人名（岗位）」。
 //
 // 表里只维护岗位，人名在渲染时从 members/ 现算 —— persona 与看板拿的是同一份派生结果，
 // 所以两处都不会各存一份名单，也就不会互相漂移（SPEC §3.5 一处维护）。
@@ -191,5 +191,5 @@ func (o *Org) WhoLabel(role string) string {
 	if len(names) == 0 {
 		return title + "（暂无人）"
 	}
-	return title + "（" + strings.Join(names, "、") + "）"
+	return strings.Join(names, "、") + "（" + title + "）"
 }

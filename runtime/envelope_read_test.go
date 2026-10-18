@@ -148,7 +148,7 @@ func TestReadContextAnswersFourQuestions(t *testing.T) {
 		t.Errorf("「数据在哪」应当是目录名 projects，实际 %q", d.Data)
 	}
 	if !strings.Contains(d.Who, "Alice Wang") {
-		t.Errorf("「找谁」应当是派生的「岗位（人名）」，实际 %q", d.Who)
+		t.Errorf("「找谁」应当是派生的「人名（岗位）」，实际 %q", d.Who)
 	}
 	if d.Evidence == nil || d.Evidence.File != "domains.md" || d.Evidence.Line <= 0 {
 		t.Errorf("证据指针应当指回 domains.md 的某一行，实际 %+v", d.Evidence)
@@ -343,7 +343,7 @@ func TestReadContextAnswersSkillsAndProjects(t *testing.T) {
 	}
 	p := out.Projects[0]
 	if !strings.Contains(p.Owner, "Alice Wang") {
-		t.Errorf("项目 owner 应当是派生出来的「岗位（人名）」，实际 %q", p.Owner)
+		t.Errorf("项目 owner 应当是派生出来的「人名（岗位）」，实际 %q", p.Owner)
 	}
 	if p.Period == "" || p.Source == "" {
 		t.Errorf("period / source 要原样搬（它们是指针），实际 %+v", p)

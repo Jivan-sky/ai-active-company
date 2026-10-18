@@ -360,7 +360,7 @@ func skillsOf(o *org.Org, roleSlug, vault string) []SkillOut {
 }
 
 // projectRows 把**挂在这些域上**的项目摊出来。域不在可见范围里 = 不出现（与域行同一条纪律：
-// 别人的域连项目名都不给，只给「找谁」）。owner 走与域行同一个 WhoLabel（岗位 → 人名）。
+// 别人的域连项目名都不给，只给「找谁」）。owner 走与域行同一个 WhoLabel（岗位 → 「人名（岗位）」）。
 func projectRows(o *org.Org, chosen []renderpkg.DomainRow) []ProjectOut {
 	inScope := make(map[string]bool, len(chosen))
 	for _, d := range chosen {

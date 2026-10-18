@@ -11,13 +11,13 @@ import (
 	"anc/internal/render"
 )
 
-// DataflowSchema 是这一份视图的版本号。与 anc.board/v1 / anc.runtime/v1 各管各的 ——
+// DataflowSchema 是这一份视图的版本号。与 anc.board/v2 / anc.runtime/v1 各管各的 ——
 // 三份契约来源不同、变化节奏不同，谁也不许捎带升别人的版本。
 const DataflowSchema = "anc.dataflow/v1"
 
 // DataflowView 是 `/api/dataflow` 的形状 —— 「谁可以做什么、通道开着吗」的**策略面**。
 //
-// 为什么不并进 anc.board/v1：那份投影只读真相源（改组织才动）；这一份要看**执行面** ——
+// 为什么不并进 anc.board/v2：那份投影只读真相源（改组织才动）；这一份要看**执行面** ——
 // gateway 实际吃的那份 config.toml 里到底写着什么。两个来源、两个变化节奏（同 /api/runtime）。
 //
 // 为什么观测面可以 import 渲染器：方向是对的（看板读渲染器的判据），反过来才越界 ——

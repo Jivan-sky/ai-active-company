@@ -40,8 +40,8 @@ func TestOrgExportStdoutIsPureJSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &m); err != nil {
 		t.Fatalf("stdout 不是合法 JSON：%v\n%s", err, out)
 	}
-	if m["schema"] != "anc.board/v1" {
-		t.Fatalf("schema = %v，期望 anc.board/v1", m["schema"])
+	if m["schema"] != "anc.board/v2" {
+		t.Fatalf("schema = %v，期望 anc.board/v2", m["schema"])
 	}
 }
 

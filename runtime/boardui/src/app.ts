@@ -13,7 +13,139 @@
 //      看板是天天看的工具，不是落地页（样式与动效预算写在 index.html 顶上）。
 //
 // 构建：`npm run build`（esbuild 打成 app.js，随 anc 二进制一起嵌进去）。
+function renderOverview(d: Data): Kid[] {
+  const b = d.board;
+  const i = d.issues;
+  const pending = d.approvals && d.approvals.wired ? d.approvals.count : null;
+  const bots = d.runtime && d.runtime.wired ? d.runtime.bots : [];
+  const green = bots.filter((x) => x.state === "ok").length;
+  const red = bots.filter((x) => x.state === "fail").length;
+  const yellow = bots.filter((x) => x.state === "warn").length;
+  const gray = bots.filter((x) => x.state === "unwired").length;
+  const activeMembers = b ? b.members.filter((m) => !m.disabled).length : 0;
+  const totalMembers = b ? b.members.length : 0;
+  const state = healthState(i);
+  let headline = "现在没有异常";
+  let lead = "校验干净、待批队列为空 —— 但这也只说明真相源格式没问题；agent 是不是真的在跑，要看运行矩阵。";
+  if (d.err !== "") {
+    headline = "现在读不到投影";
+    lead = d.err;
+  } else if (i.error !== "") {
+    headline = "现在读不到校验";
+    lead = i.error;
+  } else if (i.fatal.length > 0) {
+    headline = "现在有 " + i.fatal.length + " 条红档";
+    lead = "红档会拦住落盘。先修真相源，再看运行态 —— 看板不替你把红档藏起来。";
+  } else if (pending !== null && pending > 0) {
+    headline = "现在有 " + pending + " 件事等你点头";
+    lead = "待批队列里有人等你给一句话。点头只留痕，不改真相源；该不该批仍然由人判断。";
+  } else if (i.warn.length > 0) {
+    headline = "现在有 " + i.warn.length + " 条非红档";
+    lead = "非红档不拦落盘，但值得过目。完整清单在审计与校验页，不在这里堆成一面墙。";
+  } else if (pending === null) {
+    headline = "待批队列还没接上";
+    lead = "「读不到」不等于「没人提」。运行矩阵和真相源校验仍然可看；队列接上后再补这一格。";
+  }
+  const orbValue = pending !== null && pending > 0 ? String(pending) : red > 0 ? String(red) : "OK";
+  const orbLabel = pending !== null && pending > 0 ? "待批" : red > 0 ? "卡点" : "稳态";
+  const recent = timelineRecent(d, 6);
+  const assets = d.assets && d.assets.wired ? d.assets : null;
+  const hot = d.hot && d.hot.wired ? d.hot : null;
+  const files = assets ? assets.dirs.reduce((n, x) => n + x.files, 0) : null;
+  const auditTotal = d.audit && d.audit.wired ? d.audit.total : null;
+  const timelineTotal = d.timeline && d.timeline.wired ? d.timeline.total : null;
 
+  // 状态环：四段全部来自运行态，不另算一套。一个 bot 都没接时画灰环，不画绿灯。
+  const botTotal = bots.length;
+  const deg = (n: number): number => (botTotal === 0 ? 0 : (n / botTotal) * 360);
+  const d1 = deg(green);
+  const d2 = d1 + deg(yellow);
+  const d3 = d2 + deg(red);
+  const ring = botTotal === 0
+    ? "conic-gradient(rgba(150,153,147,.30) 0 360deg)"
+    : "conic-gradient(#4ade9a 0 " + d1 + "deg, #f0b96a " + d1 + "deg " + d2 + "deg, #ff6b81 " + d2 + "deg " + d3 + "deg, rgba(140,143,137,.46) " + d3 + "deg 360deg)";
+  const num = (n: number | null): string => (n === null ? "—" : String(n));
+
+  const dockCard = (title: string, en: string, href: string, ...body: Kid[]): HTMLElement =>
+    el("section", { class: "dock-card" },
+      el("header", {},
+        el("div", {}, el("p", { class: "eyebrow" }, en), el("h3", {}, title)),
+        el("a", { class: "dock-more", href: href }, "全部", icon("arrow", 12))),
+      el("div", { class: "dock-body" }, ...body));
+
+  const loopStep = (no: string, label: string, count: number | null, href: string): HTMLElement =>
+    el("a", { class: "loop-step", href: href },
+      el("span", { class: "ls-no" }, no), el("b", {}, num(count)), el("span", { class: "ls-label" }, label));
+
+  const dashPage = el("div", { class: "dash-stage" },
+    el("canvas", { class: "field-canvas", "aria-hidden": "true" }),
+    el("div", { class: "field-veil", "aria-hidden": "true" }),
+    el("section", { class: "stage-hero" },
+      el("div", { class: "hero-copy" },
+        el("p", { class: "eyebrow" }, "LIVE PICTURE",
+          el("span", {}, "真相源实时投影 · " + (b ? dash(b.company.name) : "还没读到投影"))),
+        el("h2", {}, headline.split("现在")[0] ?? "",
+          el("span", { class: "state " + state }, headline.replace(/^现在/, "").trim())),
+        el("p", { class: "lead" }, lead),
+        el("div", { class: "hero-actions" },
+          el("a", { class: "primary-btn", href: "#/approvals" },
+            icon("check", 15), "去待批", el("span", { class: "count" }, pending === null ? "—" : String(pending))),
+          el("a", { class: "secondary-btn", href: "#/system?tab=runtime" }, icon("pulse", 14), "运行矩阵"),
+          el("a", { class: "secondary-btn", href: "#/graph" }, icon("graph", 14), "关系图谱")),
+        el("div", { class: "hero-kpis" },
+          heroKpi("业务域", b ? String(b.domains.length) : "—", "DOMAINS"),
+          heroKpi("项目", b ? String(b.projects.length) : "—", "PROJECTS"),
+          heroKpi("成员", b ? activeMembers + "/" + totalMembers : "—", "ACTIVE"),
+          heroKpi("bot 绿", d.runtime && d.runtime.wired ? green + "/" + botTotal : "—", "LIVE"))),
+      el("div", { class: "hero-orbit", "aria-label": "运行态状态环" },
+        el("div", { class: "orbit-shell" },
+          el("div", { class: "orbit-ring", style: "background:" + ring }),
+          el("div", { class: "orbit-core" },
+            el("b", {}, orbValue), el("small", {}, orbLabel),
+            el("span", {}, b ? dash(b.company.platform) : "WAITING"))),
+        el("div", { class: "orbit-legend" },
+          el("span", {}, el("i", { class: "lg ok" }), "绿 " + green),
+          el("span", {}, el("i", { class: "lg warn" }), "黄 " + yellow),
+          el("span", {}, el("i", { class: "lg bad" }), "红 " + red),
+          el("span", {}, el("i", { class: "lg gray" }), "灰 " + gray)))),
+    el("div", { class: "stage-dock" },
+      dockCard("待批队列", "APPROVALS", "#/approvals",
+        pending === null
+          ? emptyNote("队列没接上 —— 读不到不等于没人提。")
+          : d.approvals && d.approvals.pending.length > 0
+            ? el("div", { class: "feed" }, ...d.approvals.pending.slice(0, 3).map((p) =>
+                feedRow(bandDot(p.band ?? ""), p.title, dash(p.who) + " → " + dash(p.to), sinceText(p.enqueued), "#/approvals")))
+            : emptyNote("队列是空的：现在没有等点头的提案。")),
+      dockCard("运行矩阵", "RUNTIME", "#/system?tab=runtime",
+        d.runtime === null
+          ? emptyNote("运行态没接入。")
+          : !d.runtime.wired
+            ? emptyNote("运行态没接上：" + dash(d.runtime.gateway_why ?? d.runtime.error))
+            : bots.length === 0
+              ? emptyNote("config 里一个 project 都没有。")
+              : el("div", { class: "bot-grid" }, ...bots.slice(0, 4).map(botRow))),
+      dockCard("最近活动", "ACTIVITY", "#/timeline",
+        recent.length === 0
+          ? emptyNote("时间线是空的 —— 「还没开始记」是个真实状态。")
+          : el("div", { class: "feed" }, ...recent.slice(0, 4).map((e) =>
+              feedRow(bandDot(e.band), e.title, dash(e.kind) + " · " + dash(e.by) + " → " + dash(e.to), localTime(e.at), "#/timeline"))))),
+    el("section", { class: "loop" },
+      el("div", { class: "loop-head" },
+        el("p", { class: "eyebrow" }, "OPERATING LOOP"),
+        el("span", {}, "原料进来 → 判断出去 → 结果留下")),
+      el("div", { class: "loop-track" },
+        loopStep("01", "原料", files, "#/assets"),
+        el("i", { class: "loop-arrow" }),
+        loopStep("02", "热层", hot ? hot.total : null, "#/system?tab=hot"),
+        el("i", { class: "loop-arrow" }),
+        loopStep("03", "待批", pending, "#/approvals"),
+        el("i", { class: "loop-arrow" }),
+        loopStep("04", "审计", auditTotal, "#/audit"),
+        el("i", { class: "loop-arrow" }),
+        loopStep("05", "沉淀", timelineTotal, "#/timeline"))),
+    ...(notWiredIndex() === "" ? [] : [notWiredIndex()]));
+  return [dashPage];
+}
 type Company = { name: string; id: string; platform: string; language: string; timezone: string };
 type Role = { role: string; title: string; mode: string; model: string; vault_scope: string[] };
 type Member = {
@@ -28,11 +160,17 @@ type ProjectRow = {
   slug: string; name: string; domain: string; owner: string; owner_label: string;
   period: string; source: string; charter: string;
 };
+// 业务 agent（agents.md 一行）。与 Member 是两件事：成员 bot 代人，业务 agent 代岗位 / 流程。
+// 字段来自 anc.board/v2；老服务没有这一份时按空数组处理，不当成「没有 agent」下结论。
+type AgentRow = {
+  slug: string; name: string; description: string; domain: string; role: string;
+  harness: string; model: string; tools: string[]; wired: boolean;
+};
 type RoutingRow = { dir: string; summary: string };
 type BoardView = {
   schema: string; generated_at: string; company: Company;
   roles: Role[]; members: Member[]; domains: DomainRow[];
-  projects: ProjectRow[]; routing: RoutingRow[];
+  projects: ProjectRow[]; agents?: AgentRow[]; routing: RoutingRow[];
 };
 type Finding = { rule: string; level: string; where: string; msg: string };
 type Issues = { ok: boolean; fatal: Finding[]; warn: Finding[]; error: string };
@@ -57,7 +195,8 @@ type DataflowView = {
   exec: {
     config_present: boolean; has_fingerprint: boolean;
     version?: string; inputs?: string; generated_at?: string;
-    projects: string[]; note?: string;
+    // projects 在「配置读不到」时是 null，不是空数组 —— 这两件事不能混。
+    projects: string[] | null; note?: string;
   };
   bots: DataflowBot[]; gaps: string[]; missing: string[];
   error?: string;
@@ -245,6 +384,72 @@ type Kid = Node | string;
 
 const root = document.getElementById("app");
 
+// ---------- 主题 ----------
+// 亮/暗只是同一套语义色的两组取值。选择存在 localStorage；没选过默认浅色。
+// 切换后重新挂载一次外壳：Canvas 的颜色不是 CSS 能改的，必须按新主题重画。
+type Theme = "light" | "dark";
+function currentTheme(): Theme {
+  return document.documentElement.dataset.theme === "light" ? "light" : "dark";
+}
+function applyTheme(t: Theme): void {
+  document.documentElement.dataset.theme = t;
+  try { localStorage.setItem("anc.theme", t); } catch { /* 隐私模式不记 */ }
+  shell();
+}
+
+// ---------- 图标：静态内联 SVG，不引外部图标库 ----------
+// 只画线条，不加载字体或图片；颜色跟随 currentColor，放在哪个状态里就继承哪个颜色。
+const ICONS: Record<string, string> = {
+  overview: "M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1M12 8a4 4 0 100 8 4 4 0 000-8",
+  check: "M4 12l5 5L20 6",
+  pulse: "M3 12h4l2-6 4 12 2-6h6",
+  flow: "M4 7h9a4 4 0 010 8H4M4 7l3-3M4 7l3 3M20 17h-9a4 4 0 010-8",
+  flame: "M12 3c3 4 5 6 5 9a5 5 0 01-10 0c0-2 1-3 2-5 0 2 1 3 2 3 0-3 1-5 1-7z",
+  building: "M4 21V8l8-5 8 5v13M9 21v-6h6v6M8 10h.01M12 10h.01M16 10h.01",
+  grid: "M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z",
+  users: "M9 11a4 4 0 100-8 4 4 0 000 8zm-7 9a7 7 0 0114 0M17 11a3 3 0 100-6M18 21a6 6 0 00-3-5.2",
+  layers: "M12 3l9 5-9 5-9-5 9-5zm-9 9l9 5 9-5M3 16l9 5 9-5",
+  context: "M4 5h16v10H4zM8 19h8M12 15v4",
+  key: "M14.5 4a5.5 5.5 0 00-3.9 9.4L4 20v-3h3v-3h3l.6-.6A5.5 5.5 0 1014.5 4z",
+  clock: "M12 3a9 9 0 100 18 9 9 0 000-18zm0 4v5l3 2",
+  alert: "M12 3l9 17H3L12 3zm0 6v5m0 3v.5",
+  shield: "M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6l8-3z",
+  box: "M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3zm0 0v9m8-4.5l-8 4.5-8-4.5M12 21v-9",
+  strata: "M3 6h18M6 12h15M9 18h12",
+  graph: "M5.5 6.5a2.5 2.5 0 105 0 2.5 2.5 0 00-5 0zM13.5 17.5a2.5 2.5 0 105 0 2.5 2.5 0 00-5 0zM13.5 6.5a2.5 2.5 0 105 0 2.5 2.5 0 00-5 0zM8 8.6l5.5 6.8M16 9v6",
+  gateway: "M3 9h18M3 15h18M8 3v6M16 15v6M12 9v6",
+  spark: "M12 3l1.7 5.3L19 10l-5.3 1.7L12 17l-1.7-5.3L5 10l5.3-1.7zM18.5 17.5l.7 2.1 2.1.7-2.1.7-.7 2.1-.7-2.1-2.1-.7 2.1-.7z",
+  chevronL: "M15 6l-6 6 6 6",
+  link: "M10 13a5 5 0 007.1 0l1.4-1.4a5 5 0 00-7.1-7.1L10.5 5.4M14 11a5 5 0 00-7.1 0l-1.4 1.4a5 5 0 007.1 7.1l.9-.9",
+  search: "M10.5 4a6.5 6.5 0 104.4 11.3L20 21M10.5 4a6.5 6.5 0 014.4 11.3",
+  menu: "M4 7h16M4 12h16M4 17h16",
+  close: "M6 6l12 12M18 6L6 18",
+  refresh: "M20 12a8 8 0 11-2.3-5.7M20 4v5h-5",
+  copy: "M9 9h10v11H9zM5 15V4h10",
+  sun: "M12 8a4 4 0 100 8 4 4 0 000-8M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M19.1 4.9l-1.4 1.4M6.3 17.7l-1.4 1.4",
+  moon: "M20.2 14.6A8.6 8.6 0 019.4 3.8a7 7 0 108.8 10.8z",
+  arrow: "M5 12h14M13 6l6 6-6 6",
+  chevron: "M6 9l6 6 6-6",
+  dot: "M12 8a4 4 0 100 8 4 4 0 000-8",
+};
+
+function icon(name: string, size = 16): SVGSVGElement {
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("width", String(size));
+  svg.setAttribute("height", String(size));
+  svg.setAttribute("aria-hidden", "true");
+  const path = document.createElementNS(ns, "path");
+  path.setAttribute("d", ICONS[name] ?? ICONS.dot!);
+  svg.append(path);
+  return svg;
+}
+
+function iconBox(name: string, size = 16): HTMLElement {
+  return el("span", { class: "nav-icon" }, icon(name, size));
+}
+
 // ---------- 画界面的最小零件 ----------
 
 function el(tag: string, attrs: Attrs = {}, ...kids: Kid[]): HTMLElement {
@@ -294,7 +499,11 @@ function section(title: string, hint: string, ...body: Kid[]): HTMLElement {
 
 function banner(kind: "bad" | "warn", title: string, items: Kid[]): HTMLElement {
   const ul = el("ul");
-  for (const i of items) ul.append(el("li", {}, i));
+  for (const i of items) {
+    // 调用方用 <br> 分隔「标题句 / 补充句」；它不该变成一个空的项目符号。
+    if (i instanceof HTMLElement && i.tagName === "BR") continue;
+    ul.append(el("li", {}, i));
+  }
   return el("div", { class: "banner " + kind }, el("h3", {}, title), ul);
 }
 
@@ -462,7 +671,7 @@ async function fetchData(): Promise<Data> {
 
 function noBoard(d: Data): Kid {
   return banner("bad", "读不到投影", [
-    el("span", {}, d.err === "" ? "服务返回的不是 anc.board/v1" : d.err),
+    el("span", {}, d.err === "" ? "服务返回的不是 anc.board 投影" : d.err),
     el("br"),
     el("span", { class: "mono" }, "组织 / 项目 两页都吃这份投影；先修它。"),
   ]);
@@ -585,6 +794,188 @@ function routingSection(v: BoardView): Kid {
     table(["目录", "说明"], rows));
 }
 
+// ---------- 组织视图的派生 ----------
+//
+// 这一层只做「连接已有事实」，不造新事实：
+//   - 人 → agent：同岗位 / 同业务域，两把尺子都写在标签上；
+//   - 人 → 项目：业务域重叠 / 岗位负责人，同样标出来源；
+//   - 项目进度：只有周期原文能解析成起止日期时才画一条「时间消耗」，
+//     交付进度没有数据源就写「未提供」—— 宁缺，不编。
+
+const agentsOf = (v: BoardView): AgentRow[] => Array.isArray(v.agents) ? v.agents : [];
+
+function roleTitle(v: BoardView, role: string): string {
+  const hit = v.roles.find((r) => r.role === role);
+  return hit ? dash(hit.title) : dash(role);
+}
+
+function domainOf(v: BoardView, slug: string): DomainRow | undefined {
+  return v.domains.find((d) => d.slug === slug);
+}
+
+function domainLabel(v: BoardView, slug: string): string {
+  return domainOf(v, slug)?.name ?? dash(slug);
+}
+
+function memberProjects(v: BoardView, m: Member): ProjectRow[] {
+  return v.projects.filter((p) => m.domains.includes(p.domain) || (p.owner !== "" && p.owner === m.role));
+}
+
+type AgentLink = { agent: AgentRow; why: string };
+
+function agentsForMember(v: BoardView, m: Member): AgentLink[] {
+  const out: AgentLink[] = [];
+  for (const a of agentsOf(v)) {
+    const byRole = a.role !== "" && a.role === m.role;
+    const byDomain = m.domains.includes(a.domain);
+    if (!byRole && !byDomain) continue;
+    out.push({ agent: a, why: byRole && byDomain ? "同岗位 · 同业务域" : byRole ? "同岗位" : "同业务域" });
+  }
+  return out;
+}
+
+function agentsForDomain(v: BoardView, domain: string): AgentRow[] {
+  return agentsOf(v).filter((a) => a.domain === domain);
+}
+
+// 一个业务 agent 现在在做什么：先看热层（进行中），再看时间线（已留痕的那条 case）。
+// 两条都没有就如实说没有 —— 不拿项目名或「在线」冒充正在干活。
+function agentWork(d: Data, slug: string): { title: string; status: string; source: string } | null {
+  const h = d.hot?.wired ? d.hot.entries.find((e) => e.to === slug || e.by === slug) : undefined;
+  if (h) return { title: h.title, status: h.status, source: "热层" };
+  const c = d.timeline?.wired ? d.timeline.cases.find((x) => x.to === slug || x.by === slug) : undefined;
+  if (c) return { title: c.title, status: c.status, source: "时间线" };
+  return null;
+}
+
+// 「在线」需要客户端心跳；现在没有。退一档用审计里**真的发生过**的调用记录：
+// 它只能说明「最近连过」，不能说明「此刻在跑」—— 标签必须这么写。
+function lastCall(d: Data, slug: string): AuditEntryView | null {
+  if (!d.audit?.wired) return null;
+  return d.audit.records.find((r) => r.actor === slug) ?? null;
+}
+
+function recentCallers(d: Data): Set<string> {
+  const out = new Set<string>();
+  if (!d.audit?.wired) return out;
+  const now = Date.now();
+  for (const r of d.audit.records) {
+    const t = Date.parse(r.at);
+    if (!Number.isNaN(t) && now - t <= 24 * 3600 * 1000) out.add(r.actor);
+  }
+  return out;
+}
+
+// 成员名下 agent 的三档口径：接入 = agents.md 有 app_id；在线 = 运行态是绿；
+// 运行态没接上时 online 是 null —— 「不知道」不当 0。
+function memberAgentStats(d: Data, v: BoardView, m: Member): { total: number; wired: number; online: number | null; recent: number } {
+  const links = agentsForMember(v, m);
+  const wired = links.filter((x) => x.agent.wired).length;
+  const seen = recentCallers(d);
+  const recent = links.filter((x) => seen.has(x.agent.slug)).length;
+  if (!d.runtime || !d.runtime.wired || (d.runtime.error ?? "") !== "") {
+    return { total: links.length, wired, online: null, recent };
+  }
+  const online = links.filter((x) => botStateOf(d, botProject(v, x.agent.slug)).cls.includes("ok")).length;
+  return { total: links.length, wired, online, recent };
+}
+
+// 项目名 / bot 名由 org 的渲染规则派生：<company id>-<slug|name>。
+// 只做「查一下有没有」，查不到就说没观测到，不拿别的 bot 顶上。
+function botProject(v: BoardView, ref: string): string {
+  const id = (v.company.id ?? "").trim();
+  return id === "" ? ref : id + "-" + ref;
+}
+
+function flowBotOf(d: Data, project: string): DataflowBot | null {
+  return d.dataflow?.bots.find((b) => b.project === project) ?? null;
+}
+
+function botStateOf(d: Data, project: string): { cls: string; label: string } {
+  if (!d.runtime || !d.runtime.wired) return { cls: "dot gray", label: "运行态未接入" };
+  const hit = d.runtime.bots.find((b) => b.project === project);
+  if (!hit) return { cls: "dot", label: "未观测到" };
+  const st = runState(hit.state);
+  return { cls: st.dot, label: st.label };
+}
+
+type TaskLine = { title: string; status: string; band: string; at: string; href: string; source: string };
+
+// 「当前任务」有三个来源：热层的当前态、时间线的 case、待批队列。名字对不上就写没有 ——
+// 岗位名只在**这个岗位只有一个人**时才当命中，避免把同岗位两个人的事混到一张卡上。
+function memberTasks(d: Data, m: Member): TaskLine[] {
+  const v = d.board;
+  if (!v) return [];
+  const names = new Set([m.name, m.display_name].filter((s) => s !== ""));
+  const soleRole = v.members.filter((x) => x.role === m.role).length === 1;
+  const hit = (s: string | undefined): boolean => {
+    if (s === undefined || s === "") return false;
+    return names.has(s) || (soleRole && s === m.role);
+  };
+  const out: TaskLine[] = [];
+  if (d.hot?.wired) {
+    for (const e of d.hot.entries) {
+      if (!hit(e.by) && !hit(e.to)) continue;
+      out.push({ title: e.title, status: e.status, band: "yellow", at: e.as_of ?? "", href: "#/system?tab=hot", source: "热层" });
+    }
+  }
+  if (d.timeline?.wired) {
+    for (const c of d.timeline.cases) {
+      if (!hit(c.by) && !hit(c.to)) continue;
+      out.push({ title: c.title, status: c.status, band: c.band, at: c.last_at, href: "#/timeline", source: "时间线" });
+    }
+  }
+  if (d.approvals?.wired) {
+    for (const p of d.approvals.pending) {
+      if (!hit(p.who) && !hit(p.to)) continue;
+      out.push({ title: p.title, status: p.status, band: p.band ?? "yellow", at: p.enqueued, href: "#/approvals", source: "待批" });
+    }
+  }
+  return out;
+}
+
+type DateWindow = { start: number; end: number };
+
+// 只认「两个 YYYY-MM-DD + 一个分隔符」这一种写法。认不出就返回 null，
+// 由调用方原样显示周期文本 —— 不把自由文本硬解释成日期。
+function periodWindow(period: string): DateWindow | null {
+  const m = /(\d{4})-(\d{2})-(\d{2})\s*(?:→|->|~|—|–|至|到)\s*(\d{4})-(\d{2})-(\d{2})/.exec(period);
+  if (!m) return null;
+  const start = new Date(m[1] + "-" + m[2] + "-" + m[3] + "T00:00:00").getTime();
+  const end = new Date(m[4] + "-" + m[5] + "-" + m[6] + "T23:59:59").getTime();
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
+  return { start, end };
+}
+
+function periodState(period: string): { pct: number; note: string; cls: string } | null {
+  const w = periodWindow(period);
+  if (!w) return null;
+  const now = Date.now();
+  const pct = Math.max(0, Math.min(100, ((now - w.start) / (w.end - w.start)) * 100));
+  const note = now < w.start ? "周期还没开始" : now > w.end ? "周期已结束" : "周期进行中";
+  return { pct, note, cls: now > w.end ? "over" : now < w.start ? "idle" : "live" };
+}
+
+// 授权表里命中几个主体。-1 = 授权表没接入（与「0 条」不是一回事）。
+function grantsFor(d: Data, refs: string[]): number {
+  if (!d.grants || !d.grants.wired) return -1;
+  const set = new Set(refs.filter((x) => x !== ""));
+  return d.grants.rows.filter((r) => r.who.some((w) =>
+    set.has(w.raw) || (w.name !== undefined && set.has(w.name)) || (w.identity?.ref !== undefined && set.has(w.identity.ref)))).length;
+}
+
+function dcard(title: string, badge: string, ...body: Kid[]): HTMLElement {
+  const h = el("h3", {}, title);
+  if (badge !== "") h.append(el("span", { class: "chip mono" }, badge));
+  return el("section", { class: "dcard" }, h, ...body);
+}
+
+function kv(rows: Array<[string, Kid]>): HTMLElement {
+  const dl = el("dl");
+  for (const [k, v] of rows) dl.append(el("dt", {}, k), el("dd", {}, v));
+  return dl;
+}
+
 // ---------- 页面 ----------
 //
 // 一页一个 Page：`id` 是 hash 路由，`question` 是这一页**唯一**要回答的问题。
@@ -593,26 +984,72 @@ function routingSection(v: BoardView): Kid {
 type Page = {
   id: string;
   label: string;
+  icon: string;
   group: string;   // 导航里的分组：组的标题是**问题**（现在/组织/记录/运行/原料），不是名词
   question: string;
+  sub?: string;    // 页头第二行：这页读什么、边界在哪。缺省就用 question。
   wired: boolean;
   view: (d: Data) => Kid[];
 };
 
 // 总览 —— 读者：所有人 / 老板。要的是「30 秒看完有没有事」，不是名词表。
-function renderOverview(d: Data): Kid[] {
-  const out: Kid[] = [];
-  if (d.err !== "") out.push(banner("bad", "读不到投影", [el("span", {}, d.err)]));
-  out.push(...alertBanners(d.issues));
-  if (d.board) out.push(statSection(d.board));
-  const clean = d.err === "" && d.issues.error === "" && d.issues.fatal.length === 0 && d.issues.warn.length === 0;
-  if (clean) out.push(banner("warn", "没有发现", [
-    el("span", {}, "校验零红档零非红档 —— 但这只说明"),
-    el("strong", {}, "真相源格式没问题"),
-    el("span", {}, "，不说明 agent 在跑。那件事要看「运行态」。"),
-  ]));
-  out.push(notWiredIndex());
-  return out;
+//
+// 这一页是仪表盘，不是把其它页的表搬过来：只放「现在要不要人动手」的四类事实
+// （校验、待批、运行、最近活动），每一项都能点进对应的细页。没有数据源就写
+// 「未接入」，不画一个看起来热闹的空图。
+function healthState(i: Issues): "ok" | "warn" | "bad" {
+  if (i.error !== "" || i.fatal.length > 0) return "bad";
+  if (i.warn.length > 0) return "warn";
+  return "ok";
+}
+
+function healthWord(i: Issues): string {
+  if (i.error !== "") return "读不到真相源";
+  if (i.fatal.length > 0) return "有红档";
+  if (i.warn.length > 0) return "需过目";
+  return "校验干净";
+}
+
+function heroKpi(label: string, value: string, sub: string): HTMLElement {
+  return el("div", { class: "kpi" },
+    el("span", {}, label),
+    el("strong", {}, value, sub === "" ? "" : el("small", {}, " " + sub)));
+}
+
+function healthRow(dot: string, count: string, label: string, why: string): HTMLElement {
+  return el("div", { class: "health-row" },
+    el("span", { class: dot }), el("b", {}, count), el("span", { class: "lab" }, label),
+    el("span", { class: "why" }, why));
+}
+
+function feedRow(dot: string, title: string, sub: string, time: string, href: string): HTMLElement {
+  return el("a", { class: "feed-row", href: href },
+    el("span", { class: dot }),
+    el("span", { class: "ft" }, el("b", {}, title), el("small", {}, sub)),
+    el("span", { class: "tm" }, time));
+}
+
+function botRow(b: RuntimeBot): HTMLElement {
+  const st = runState(b.state);
+  return el("div", { class: "bot-row", title: b.why },
+    el("span", { class: st.dot }), el("span", { class: "bn" }, b.project),
+    el("span", { class: "bw" }, st.label.split(" · ")[0] ?? ""));
+}
+
+function bentoCard(title: string, hint: string, span: string, more: [string, string] | null, ...body: Kid[]): HTMLElement {
+  const head = el("div", { class: "card-head" },
+    el("div", {}, el("h3", {}, title), el("div", { class: "hint" }, hint)),
+    more === null ? "" : el("a", { class: "more", href: more[0] }, more[1] + "  ›"));
+  return el("section", { class: "glass bento-card " + span }, head, el("div", { class: "grow" }, ...body));
+}
+
+function timelineRecent(d: Data, n: number): TimelineEntryView[] {
+  const v = d.timeline;
+  if (!v || !v.wired) return [];
+  const rows: TimelineEntryView[] = [];
+  for (const c of v.cases) for (const e of c.recent) rows.push(e);
+  rows.sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
+  return rows.slice(0, n);
 }
 
 // 组织 —— 读者：管理者 / FDE。组织长什么样、边界在哪。
@@ -622,18 +1059,366 @@ function renderOrg(d: Data): Kid[] {
   return [domainSection(v), roleSection(v), routingSection(v)];
 }
 
+// 组织总览 —— 只放「公司是什么、数据从哪走」；域、角色、项目各自单独一页。
+function renderOrgOverview(d: Data): Kid[] {
+  const v = d.board;
+  if (!v) return [noBoard(d)];
+  const c = v.company;
+  return [
+    section("公司", "投影里的公司档案：字段来自真相源，不在前端拼",
+      el("div", { class: "grid" },
+        card(dash(c.name), dash(c.id), [
+          ["平台", dash(c.platform)],
+          ["语言", dash(c.language)],
+          ["时区", dash(c.timezone)],
+          ["schema", el("span", { class: "mono" }, dash(v.schema))],
+        ]),
+        card("数据路由", "顶层目录 → 说明", v.routing.length === 0
+          ? [["状态", cannot("还没有顶层数据目录")]]
+          : v.routing.slice(0, 5).map((r): [string, Kid] => [r.dir, dash(r.summary)])))),
+    statSection(v),
+    routingSection(v),
+  ];
+}
+
+// 业务域 —— 从「组织」里拆出来：一块业务一行，回答「这是哪块业务、数据在哪、卡住找谁」。
+function renderDomains(d: Data): Kid[] {
+  const v = d.board;
+  if (!v) return [noBoard(d)];
+  return [
+    domainSection(v),
+    section("这一页只答什么", "域是罗盘，不是项目清单",
+      emptyNote("项目、角色、授权各自另有页。这里只回答「一块业务是什么、谁在做、数据在哪」。")),
+  ];
+}
+
+// 成员与 Agent —— 一人一张卡。卡片只摆「能对上号」的关系：
+// 同岗位 / 同业务域的 agent 标出来源；任务只从时间线与待批队列取。
+function memberCard(d: Data, v: BoardView, m: Member, badge?: string): HTMLElement {
+  const links = agentsForMember(v, m);
+  const tasks = memberTasks(d, m);
+  const stats = memberAgentStats(d, v, m);
+  const bot = botStateOf(d, botProject(v, m.name));
+  const state = m.disabled ? "已停用" : m.admin ? "管理员" : "启用";
+  const mark = (m.display_name || m.name).trim().slice(0, 1).toUpperCase() || "?";
+  const node = el("article", {
+    class: "entity-card member-card" + (m.disabled ? " is-off" : ""),
+    role: "button", tabindex: "0", "aria-label": "打开 " + dash(m.display_name || m.name) + " 的详情",
+  },
+    el("header", { class: "ec-head" },
+      el("span", { class: "avatar" }, mark),
+      el("div", { class: "ec-id" },
+        el("h3", {}, dash(m.display_name || m.name)),
+        el("p", {}, roleTitle(v, m.role), el("span", { class: "dot-sep" }, "·"), el("span", { class: "mono" }, dash(m.name)))),
+      el("span", { class: "ec-state" + (m.disabled ? " off" : "") }, state)),
+    el("div", { class: "ec-tags" },
+      ...(badge === undefined ? [] : [el("span", { class: "ec-tag on" }, badge)]),
+      ...(m.domains.length === 0
+        ? [el("span", { class: "ec-tag muted" }, "未挂业务域")]
+        : m.domains.map((x) => el("span", { class: "ec-tag" }, domainLabel(v, x))))),
+    el("p", { class: "ec-line" }, links.length === 0
+      ? "没有挂得上的人 ↔ agent 关系"
+      : links.slice(0, 3).map((x) => dash(x.agent.name || x.agent.slug) + "（" + x.why + "）").join("、")
+        + (links.length > 3 ? " 等 " + links.length + " 个" : "")),
+    el("div", { class: "ec-foot" },
+      el("span", {}, "Agent ", el("b", {}, String(stats.total))),
+      el("span", {}, "接入 ", el("b", {}, String(stats.wired))),
+      el("span", {}, "在线 ", el("b", {}, stats.online === null ? "—" : String(stats.online))),
+      el("span", {}, "近期 ", el("b", {}, String(stats.recent))),
+      el("span", {}, "任务 ", el("b", {}, String(tasks.length))),
+      el("span", { class: "ec-run" }, el("span", { class: bot.cls }), bot.label)));
+  const open = (): void => openMemberDrawer(d, v, m);
+  node.addEventListener("click", open);
+  node.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
+  });
+  return node;
+}
+
+function openMemberDrawer(d: Data, v: BoardView, m: Member): void {
+  const links = agentsForMember(v, m);
+  const tasks = memberTasks(d, m);
+  const stats = memberAgentStats(d, v, m);
+  const projects = memberProjects(v, m);
+  const refs = [m.name, ...links.map((x) => x.agent.slug)];
+  const grants = grantsFor(d, refs);
+  const bot = botStateOf(d, botProject(v, m.name));
+  const doms = m.domains.map((x) => domainOf(v, x)).filter((x): x is DomainRow => x !== undefined);
+  openDrawer({
+    eyebrow: "MEMBER / 成员与 Agent",
+    title: dash(m.display_name || m.name),
+    sub: roleTitle(v, m.role) + " · " + (m.disabled ? "已停用" : "启用") + (m.admin ? " · 管理员" : ""),
+    body: [
+      el("div", { class: "drawer-grid" },
+        el("div", { class: "dg-col" },
+          dcard("身份与归属", "IDENTITY",
+            kv([
+              ["显示名", dash(m.display_name)],
+              ["登录名", el("span", { class: "mono" }, dash(m.name))],
+              ["岗位", roleTitle(v, m.role) + "（" + dash(m.role) + "）"],
+              ["模型", dash(m.model)],
+              ["状态", m.disabled ? "已停用" : m.admin ? "启用 · 管理员" : "启用"],
+            ]),
+            el("p", { class: "dnote" }, "成员 bot 运行态：", el("span", { class: bot.cls }), " " + bot.label,
+              el("span", { class: "mono" }, " · " + botProject(v, m.name)))),
+          dcard("业务范围", "SCOPE",
+            doms.length === 0
+              ? el("p", { class: "empty" }, "没挂业务域。")
+              : el("div", { class: "dlist" }, ...doms.map((x) =>
+                  el("div", { class: "drow" },
+                    el("span", { class: "dot gold" }),
+                    el("span", { class: "drow-main" }, el("b", {}, dash(x.name)), el("small", {}, dash(x.what)))))),
+            projects.length === 0 ? "" : el("p", { class: "dnote" }, "相关项目（按业务域 / 岗位负责人推断）：", projects.map((p) => p.name).join("、"))),
+          dcard("当前任务", tasks.length === 0 ? "0" : String(tasks.length),
+            tasks.length === 0
+              ? el("p", { class: "empty" }, "没有以本人姓名指派的任务（热层 by/to、时间线、待批都没命中）；名下 Agent 正在做的事见右侧「我的 Agent」。")
+              : el("div", { class: "dlist" }, ...tasks.slice(0, 8).map((t) =>
+                  el("a", { class: "drow", href: t.href },
+                    el("span", { class: bandDot(t.band) }),
+                    el("span", { class: "drow-main" }, el("b", {}, t.title), el("small", {}, t.source + " · " + dash(t.status))),
+                    el("span", { class: "drow-time" }, sinceText(t.at)))))),
+        ),
+        el("div", { class: "dg-col" },
+          dcard("我的 Agent", stats.online === null
+              ? "接入 " + String(stats.wired) + " / 共 " + String(stats.total) + " · 在线未知（运行态未接） · 24h 内调用 " + String(stats.recent)
+              : "在线 " + String(stats.online) + " / 共 " + String(stats.total) + " · 接入 " + String(stats.wired) + " · 24h 内调用 " + String(stats.recent),
+            links.length === 0
+              ? el("p", { class: "empty" }, "按「同岗位 / 同业务域」都挂不上 agent。")
+              : el("div", { class: "dlist" }, ...links.map((x) => {
+                  const st = botStateOf(d, botProject(v, x.agent.slug));
+                  const work = agentWork(d, x.agent.slug);
+                  const call = lastCall(d, x.agent.slug);
+                  const project = v.projects.find((p) => p.domain === x.agent.domain);
+                  return el("div", { class: "drow" },
+                    el("span", { class: st.cls }),
+                    el("span", { class: "drow-main" },
+                      el("b", {}, dash(x.agent.name || x.agent.slug) + " · " + dash(x.agent.harness || "默认 harness")),
+                      el("small", { class: "wrap" }, dash(x.agent.slug)
+                        + " · " + (x.agent.wired ? "已接入" : "未接凭据")
+                        + " · " + st.label
+                        + " · " + (call === null ? "无调用记录" : "最近调用 " + sinceText(call.at))
+                        + " · " + (work === null ? "当前没有进行中的任务" : "正在做：" + work.title + "（" + work.source + " / " + work.status + "）")),
+                      project === undefined ? "" : el("small", { class: "wrap" }, "服务项目：" + dash(project.name))),
+                    el("span", { class: "chip mono" }, x.why));
+                }))),
+          dcard("汇报与指向", "NO FAKE HIERARCHY",
+            kv([
+              ["上级", cannot("未提供 —— org 里还没有 reports_to 字段")],
+              ["相关项目", projects.length === 0 ? "—" : projects.map((p) => p.name).join("、") + "（推断）"],
+              ["数据指向", doms.length === 0 ? "—" : doms.map((x) => dash(x.data)).join("、")],
+            ])),
+          dcard("授权摘要", "GRANTS",
+            grants < 0
+              ? el("p", { class: "empty" }, "授权表没接入。")
+              : el("p", {}, "命中 " + String(grants) + " 条。",
+                  grants === 0 ? cannot(" —— 没有 grant 就是不通（SPEC §6 不变量 1）。") : ""))),
+      ),
+    ],
+  });
+}
+
+function renderMembers(d: Data): Kid[] {
+  const v = d.board;
+  if (!v) return [noBoard(d)];
+  const people = v.members.slice().sort((a, b) =>
+    Number(a.disabled) - Number(b.disabled) || (a.display_name || a.name).localeCompare(b.display_name || b.name, "zh"));
+  const vac = v.roles.filter((r) => !v.members.some((m) => m.role === r.role && !m.disabled));
+  const orphans = agentsOf(v).filter((a) =>
+    !v.members.some((m) => !m.disabled && agentsForMember(v, m).some((l) => l.agent.slug === a.slug)));
+  // 「我的卡片」不猜登录态：URL 上的 who 优先，没写就取第一个启用中的管理员。
+  // 它只决定以谁的视角看，不改任何权限 —— 看板不做登录校验。
+  const want = (hashQuery().get("who") ?? "").trim();
+  const me = people.find((m) => m.name === want || (m.display_name || "") === want)
+    ?? people.find((m) => m.admin && !m.disabled && m.role === "fde-lead")
+    ?? people.find((m) => m.admin && !m.disabled)
+    ?? people[0];
+  const nameCount = new Map<string, number>();
+  for (const m of people) {
+    const key = m.display_name || m.name;
+    nameCount.set(key, (nameCount.get(key) ?? 0) + 1);
+  }
+  const chipLabel = (m: Member): string =>
+    (nameCount.get(m.display_name || m.name) ?? 0) > 1
+      ? (m.display_name || m.name) + " · " + m.name
+      : (m.display_name || m.name);
+  const openWho = (hashQuery().get("open") ?? "").trim();
+  if (openWho !== "") {
+    const target = people.find((m) => m.name === openWho);
+    if (target !== undefined) setTimeout(() => openMemberDrawer(d, v, target), 0);
+  }
+  return [
+    me === undefined ? "" : section("我的卡片", "看板不做登录：这里只决定「以谁的视角看」，不改任何权限",
+      el("div", { class: "ec-tags" }, ...people.map((m) =>
+        el("a", { class: "ec-tag" + (m === me ? " on" : ""), href: "#/members?who=" + encodeURIComponent(m.name) },
+          dash(chipLabel(m))))),
+      el("div", { class: "entity-grid", style: "margin-top:12px" }, memberCard(d, v, me, "我的视角"))),
+    section("成员管理", "一人一张卡；点开看身份、名下 Agent 是否在线、在做什么、以及当前任务",
+      people.length === 0
+        ? emptyNote("还没有成员（members/ 为空）。")
+        : el("div", { class: "entity-grid" }, ...people.map((m) => memberCard(d, v, m)))),
+    vac.length === 0 ? "" : section("还空着的岗位", "roles/ 里有岗位，但 members/ 里没有人",
+      el("div", { class: "ec-tags" }, ...vac.map((r) =>
+        el("span", { class: "ec-tag" }, dash(r.title) + " · ", el("span", { class: "mono" }, r.role))))),
+    orphans.length === 0 ? "" : section("未落到成员身上的业务 Agent", "按同岗位 / 同业务域都挂不上 —— 不是错误，但需要有人认领",
+      el("div", { class: "dlist" }, ...orphans.map((a) =>
+        el("div", { class: "drow" },
+          el("span", { class: "dot gold" }),
+          el("span", { class: "drow-main" }, el("b", {}, dash(a.name || a.slug)), el("small", {}, dash(a.description))),
+          el("span", { class: "chip mono" }, "域 " + dash(a.domain)))))),
+    section("这一页怎么读", "关系是派生的，不是编的",
+      el("div", { class: "grid" },
+        card("人 → Agent", "两把尺子", [["同岗位", "agent.role = 成员岗位"], ["同业务域", "agent.domain ∈ 成员业务域"]]),
+        card("当前任务", "三个来源", [["热层", "进行中的 by / to 命中姓名"], ["时间线", "case 的 by / to 命中姓名"], ["待批", "队列里的 who / to 命中"]]),
+        card("没有的东西", "明确留白", [["上级", "org 还没有 reports_to 字段"], ["交付进度", "没有进度真相源"]]))),
+  ];
+}
+
 // 项目 —— 读者：跟进的人 / 老板。谁在做什么、到几号、卡住找谁。
+// 进度拆成两件事：周期时间消耗（可由原文日期推导）与交付进度（没有真相源）。
+function projectCard(d: Data, v: BoardView, p: ProjectRow): HTMLElement {
+  const pct = periodState(p.period);
+  const agents = agentsForDomain(v, p.domain);
+  const recent = d.timeline?.wired ? d.timeline.cases.filter((c) => c.project === p.slug).length : -1;
+  const node = el("article", {
+    class: "entity-card project-card",
+    role: "button", tabindex: "0", "aria-label": "打开项目 " + dash(p.name) + " 的详情",
+  },
+    el("header", { class: "ec-head" },
+      el("span", { class: "avatar project" }, "项"),
+      el("div", { class: "ec-id" },
+        el("h3", {}, dash(p.name)),
+        el("p", {}, domainLabel(v, p.domain), el("span", { class: "dot-sep" }, "·"), el("span", { class: "mono" }, dash(p.slug))))),
+    el("div", { class: "ec-tags" },
+      el("span", { class: "ec-tag" }, "负责人 " + dash(p.owner_label)),
+      el("span", { class: "ec-tag" }, "周期 " + dash(p.period)),
+      ...(p.charter === "" ? [] : [el("span", { class: "ec-tag" }, "立项书副本")])),
+    pct
+      ? el("div", { class: "meter " + pct.cls },
+          el("div", { class: "meter-head" }, el("span", {}, "周期时间进度"), el("b", {}, String(Math.round(pct.pct)) + "%")),
+          el("div", { class: "track" }, el("i", { style: "width:" + pct.pct.toFixed(1) + "%" })),
+          el("p", { class: "meter-note" }, pct.note + " · 按周期起止推算，只表示时间消耗，不是交付进度。"))
+      : el("p", { class: "meter-note" }, "周期是自由文本，解析不出起止日期 —— 原样显示，不画进度条。"),
+    el("div", { class: "ec-foot" },
+      el("span", {}, "交付进度 ", el("b", { class: "muted" }, "未提供")),
+      el("span", {}, "Agent ", el("b", {}, String(agents.length))),
+      el("span", {}, "记录 ", recent < 0 ? "—" : String(recent))));
+  const open = (): void => openProjectDrawer(d, v, p);
+  node.addEventListener("click", open);
+  node.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
+  });
+  return node;
+}
+
+function openProjectDrawer(d: Data, v: BoardView, p: ProjectRow): void {
+  const pct = periodState(p.period);
+  const agents = agentsForDomain(v, p.domain);
+  const cases = d.timeline?.wired ? d.timeline.cases.filter((c) => c.project === p.slug) : [];
+  const grants = grantsFor(d, agents.map((a) => a.slug));
+  openDrawer({
+    eyebrow: "PROJECT / 项目",
+    title: dash(p.name),
+    sub: dash(p.slug) + " · " + domainLabel(v, p.domain) + " · " + dash(p.owner_label),
+    body: [
+      el("div", { class: "drawer-grid" },
+        el("div", { class: "dg-col" },
+          dcard("项目档案", "DOSSIER",
+            kv([
+              ["挂哪块业务", domainLabel(v, p.domain) + "（" + dash(p.domain) + "）"],
+              ["卡住找谁", dash(p.owner_label)],
+              ["周期（原文）", dash(p.period)],
+              ["真源", sourceCell(p.source)],
+              ["立项书副本", p.charter === "" ? cannot("还没有副本") : el("span", { class: "mono" }, p.charter)],
+            ])),
+          dcard("进度", "TWO KINDS",
+            pct
+              ? el("div", { class: "meter " + pct.cls },
+                  el("div", { class: "meter-head" }, el("span", {}, "周期时间消耗"), el("b", {}, String(Math.round(pct.pct)) + "%")),
+                  el("div", { class: "track" }, el("i", { style: "width:" + pct.pct.toFixed(1) + "%" })),
+                  el("p", { class: "meter-note" }, pct.note + "。"))
+              : el("p", { class: "empty" }, "周期原文解析不出起止日期，所以不画时间条。"),
+            el("p", { class: "dnote" }, "交付进度：", cannot("未提供 —— 项目表与立项书里没有机器可读的进度字段。"),
+              " 这一条不能拿时间消耗冒充。"))),
+        el("div", { class: "dg-col" },
+          dcard("服务这个项目的 Agent", String(agents.length),
+            agents.length === 0
+              ? el("p", { class: "empty" }, "没有业务 agent 挂在这个业务域上。")
+              : el("div", { class: "dlist" }, ...agents.map((a) => {
+                  const st = botStateOf(d, botProject(v, a.slug));
+                  const flow = flowBotOf(d, botProject(v, a.slug));
+                  return el("div", { class: "drow" },
+                    el("span", { class: st.cls }),
+                    el("span", { class: "drow-main" },
+                      el("b", {}, dash(a.name || a.slug)),
+                      el("small", {}, dash(a.description) + (flow ? " · 入站 " + String(flow.inbound) + " 人" : ""))),
+                    el("span", { class: "drow-time" }, st.label));
+                })),
+            grants < 0 ? "" : el("p", { class: "dnote" }, "这些 agent 在授权表里命中 " + String(grants) + " 条。")),
+          dcard("最近记录", cases.length === 0 ? "0" : String(cases.length),
+            cases.length === 0
+              ? el("p", { class: "empty" }, "时间线里没有这个项目的 case。")
+              : el("div", { class: "dlist" }, ...cases.slice(0, 8).map((c) =>
+                  el("a", { class: "drow", href: "#/timeline" },
+                    el("span", { class: bandDot(c.band) }),
+                    el("span", { class: "drow-main" }, el("b", {}, c.title), el("small", {}, dash(c.status))),
+                    el("span", { class: "drow-time" }, sinceText(c.last_at)))))),
+          dcard("交付进度为什么空着", "GAP",
+            el("p", { class: "empty" }, "「进度」每天变：写进 git 真相源＝每天刷 diff、人手维护必腐烂。" +
+              "候选：① 表里留一个指针、渲染时聚合；② 交给 agent 在数据目录里写；③ 另开一张动态表、不进 git。" +
+              "拍板前这里留白 —— 见 SPEC §13 Q15 与 GitHub #36。"))),
+      ),
+    ],
+  });
+}
+
+function openAgentDrawer(d: Data, v: BoardView, a: AgentRow): void {
+  const st = botStateOf(d, botProject(v, a.slug));
+  const flow = flowBotOf(d, botProject(v, a.slug));
+  const grants = grantsFor(d, [a.slug]);
+  openDrawer({
+    eyebrow: "AGENT / 业务 Agent",
+    title: dash(a.name || a.slug),
+    sub: dash(a.slug) + " · " + domainLabel(v, a.domain) + " · " + roleTitle(v, a.role),
+    body: [
+      el("div", { class: "drawer-grid" },
+        el("div", { class: "dg-col" },
+          dcard("身份与铭文", "INSCRIPTION",
+            kv([
+              ["slug", el("span", { class: "mono" }, dash(a.slug))],
+              ["铭文", dash(a.description)],
+              ["挂哪块业务", domainLabel(v, a.domain) + "（" + dash(a.domain) + "）"],
+              ["代哪个岗位", roleTitle(v, a.role) + "（" + dash(a.role) + "）"],
+            ]))),
+        el("div", { class: "dg-col" },
+          dcard("接入与运行", "RUNTIME",
+            kv([
+              ["平台绑定", a.wired ? "已声明 app_id" : cannot("还没有 app_id —— 按未接线处理")],
+              ["运行态", st.label],
+              ["harness", dash(a.harness)],
+              ["模型", a.model === "" ? "走公司 / 岗位默认" : a.model],
+              ["工具", a.tools.length === 0 ? cannot("空（没预授权）") : el("span", { class: "mono" }, a.tools.join(", "))],
+              ["入站授权", flow ? String(flow.inbound) + " 人" : "未在数据流里读到"],
+              ["授权表", grants < 0 ? "未接入" : String(grants) + " 条"],
+            ]),
+            el("p", { class: "dnote" }, "project：", el("span", { class: "mono" }, botProject(v, a.slug))))),
+      ),
+    ],
+  });
+}
+
 function renderProjects(d: Data): Kid[] {
   const v = d.board;
   if (!v) return [noBoard(d)];
-  return [projectSection(v), progressGap()];
-}
-
-function progressGap(): Kid {
-  return section("进度：口径还没定", "所以这一页不显示进度 —— 宁缺，不编",
-    emptyNote("「进度」是活的、每天变：写进 git 真相源＝每天刷 diff、人手维护必腐烂。" +
-      "候选：① 表里留一个指针、渲染时聚合（倾向）；② 完全交给 agent 在数据目录里写；③ 另开一张动态表、不进 git。" +
-      "拍板前这里空着 —— 见 SPEC §13 Q15 与 GitHub #36。"));
+  return [
+    section("全部项目", "一张卡一个项目；进度拆成「周期时间消耗」与「交付进度」两件事",
+      v.projects.length === 0
+        ? emptyNote("项目表还是空的（projects.md 没有数据行）—— 由 agent 从立项书抽取后填。")
+        : el("div", { class: "entity-grid" }, ...v.projects.map((p) => projectCard(d, v, p)))),
+    section("进度的口径", "两个数字不能混",
+      el("div", { class: "grid" },
+        card("周期时间消耗", "可推导", [["来源", "projects.md 的 period 原文"], ["算法", "起止日期之间消耗的比例"], ["含义", "只说明时间过去了多少"]]),
+        card("交付进度", "未提供", [["来源", "没有机器可读的进度字段"], ["处理", "不画百分比、不拿时间冒充"], ["缺口", "见 #36 / SPEC §13 Q15"]]))),
+  ];
 }
 
 // 运行态四档口径（拍板）：绿 = 近期真回过话；黄 = 运行中 / 这个窗口没观测到；红 = 卡点，需人介入；
@@ -770,6 +1555,7 @@ function renderDataflow(d: Data): Kid[] {
 // 执行面那一块：这份 config 是不是渲染产物、按哪份真相源生成的、里头有哪几个 project。
 function execSection(v: DataflowView): Kid {
   const e = v.exec;
+  const projects = Array.isArray(e.projects) ? e.projects : [];
   if (!e.config_present) {
     return section("执行面", "gateway 实际吃的那份 config.toml",
       el("p", { class: "empty" }, cannot(dash(e.note))));
@@ -779,9 +1565,9 @@ function execSection(v: DataflowView): Kid {
       ? el("span", { class: "mono" }, (e.version ?? "") + " · inputs=" + (e.inputs ?? ""))
       : cannot("没有 anc 指纹 —— 手写或他源配置")],
     ["生成于", e.has_fingerprint ? localTime(e.generated_at ?? "") : "—"],
-    ["project", e.projects.length === 0
+    ["project", projects.length === 0
       ? cannot("一个都没扫到")
-      : el("span", { class: "mono" }, e.projects.join(", "))],
+      : el("span", { class: "mono" }, projects.join(", "))],
   ];
   return section("执行面", "gateway 实际吃的那份 config.toml —— 策略面说得再好，也得它真吃上了才算",
     card("这份 config 是谁", "", rows),
@@ -800,7 +1586,6 @@ function renderAssets(d: Data): Kid[] {
   const out: Kid[] = [];
   if ((v.error ?? "") !== "") out.push(banner("bad", "真相源读不动", [el("span", {}, dash(v.error))]));
   out.push(banner("warn", "这是原料，不是沉淀", [el("span", {}, dash(v.note))]));
-  out.push(sedimentSection(d));
 
   const total = v.dirs.reduce((n, x) => n + x.files, 0);
   out.push(section("规模", "真相源里那张「数据路由」表的一行一行，加上它底下现在有多少东西",
@@ -835,6 +1620,122 @@ function renderAssets(d: Data): Kid[] {
     el("p", { class: "empty" },
       "不把「有文件」说成「有资产」；不给产出打「能不能复用」的分（那要有判据，见议题 #26 / #27）；",
       "只读 —— 没有任何写入口，也不动这些文件。")));
+  return out;
+}
+
+// 热层 —— 「还在发生的事」本身。与「待批」同一份底层数据、两个问题：
+// 那是队列（等谁点头），这是这一层（几条、几条不新鲜、多久自己走）。
+function renderHot(d: Data): Kid[] {
+  const v = d.hot;
+  if (!v) {
+    return [banner("bad", "读不到热层", [el("span", {}, d.hotErr === "" ? "服务没回 anc.hot/v1" : d.hotErr)])];
+  }
+  if (!v.wired) {
+    return [banner("warn", "热层还没接上", [
+      el("span", {}, dash(v.why)),
+      el("br"),
+      el("span", {}, "「读不到」不等于「里面是空的」—— 这一页不拿空列表冒充没事。"),
+    ])];
+  }
+  const out: Kid[] = [];
+  if ((v.error ?? "") !== "") out.push(banner("bad", "热层读不动", [el("span", {}, dash(v.error))]));
+  out.push(section("这一层现在什么情况", "阈值由服务端给，前端只翻成人话；不认领、不清走、不改任何一条",
+    el("div", { class: "figs" },
+      statCard(String(v.total), "条目", "热层总数"),
+      statCard(String(v.stale), "不新鲜", "只是标记，不拦不删"),
+      statCard(durText(v.ttl_secs), "保鲜期", "0 = 不失效"),
+      statCard(durText(v.stale_after_secs), "不新鲜阈值", "多久没动算旧"))));
+  const cards = v.entries.map((e) => {
+    const age = e.age_secs == null ? "没写时间" : durText(e.age_secs) + " 前";
+    const cardEl = el("div", { class: "card", tabindex: "0" },
+      el("h3", {}, el("span", { class: e.stale ? "dot warn" : "dot ok" }), dash(e.title), chip(e.id, true)),
+      el("dl", {},
+        el("dt", {}, "状态"), el("dd", {}, dash(e.status)),
+        el("dt", {}, "谁 → 交给谁"), el("dd", {}, dash(e.by) + " → " + dash(e.to)),
+        el("dt", {}, "多久没动"), el("dd", {}, age),
+        el("dt", {}, "新鲜度"), el("dd", {}, e.stale ? cannot("不新鲜（只是标记）") : "新鲜")));
+    const open = () => openDrawer({
+      eyebrow: "HOT / 热层", title: dash(e.title), sub: dash(e.id) + " · " + dash(e.status),
+      body: [
+        card("这条现在在哪", "热层是缓存，不是永久资产", [
+          ["id", el("span", { class: "mono" }, e.id)],
+          ["状态", dash(e.status)],
+          ["谁 → 交给谁", dash(e.by) + " → " + dash(e.to)],
+          ["多久没动", age],
+          ["新鲜度", e.stale ? "不新鲜（只是标记，不拦不删）" : "新鲜"],
+        ]),
+      ],
+    });
+    cardEl.addEventListener("click", open);
+    cardEl.addEventListener("keydown", (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); open(); } });
+    return cardEl;
+  });
+  out.push(section("住着哪些事", "最多回显 " + v.entries.length + " 条；总数照报，不因为截断装作只有这些",
+    cards.length === 0 ? emptyNote("热层现在是空的 —— 没有还在发生的事。") : el("div", { class: "grid" }, ...cards)));
+  out.push(section("这一页不做什么", "说清边界比多画几张卡有用",
+    emptyNote("不认领、不清走、不改任何一条；过期只是标记。要处理，去「待批」或「时间线」。")));
+  return out;
+}
+
+// 沉淀 —— 只画「料 → 丢掉 → 热层 → 落库 → 隐匿」这条口径，不把原料数量说成资产。
+function renderSediment(d: Data): Kid[] {
+  return [
+    sedimentSection(d),
+    section("这一页只答什么", "沉淀是口径图，不是统计报表",
+      emptyNote("原料在「原料」页；热层明细在「热层」页。这一页只画四层分工与每层能对上的真数。")),
+  ];
+}
+
+// 卡点 —— 从时间线派生：只筛红 / 黄 / 等人给一句话的 case，不另存一份事实。
+function renderCases(d: Data): Kid[] {
+  const v = d.timeline;
+  if (!v) {
+    return [banner("bad", "读不到时间线", [el("span", {}, d.timelineErr === "" ? "服务没回 anc.timeline/v1" : d.timelineErr)])];
+  }
+  if (!v.wired) {
+    return [banner("warn", "时间线还没接上", [el("span", {}, dash(v.error))])];
+  }
+  const rows = v.cases.filter((c) => c.band === "red" || c.band === "yellow" || c.band === "input-required");
+  const out: Kid[] = [];
+  out.push(section("卡点口径", "这一页是时间线的派生视图：只筛，不另存",
+    el("div", { class: "figs" },
+      statCard(String(v.counts.red), "红 · 卡点 / 失败", "blocked · failed", "dot bad"),
+      statCard(String(v.counts.yellow), "黄 · 运行中", "running", "dot warn"),
+      statCard(String(rows.length), "这一页列出的 case", "红 / 黄 / 等人给一句话"),
+      statCard(d.audit ? String(d.audit.bands.denied + d.audit.bands.failed) : "—", "审计里的被拒 / 失败", "另一份数据源"))));
+  const cards = rows.map((c) => {
+    const cardEl = el("div", { class: "card", tabindex: "0" },
+      el("h3", {}, dotLine(bandDot(c.band), el("span", {}, c.title)), chip(c.key, true)),
+      el("dl", {},
+        el("dt", {}, "当前状态"), el("dd", {}, statusCell(c.status)),
+        el("dt", {}, "谁 → 交给谁"), el("dd", {}, handOff(c.by, c.to)),
+        el("dt", {}, "业务域 · 项目"), el("dd", {}, dash([c.domain, c.project].filter((x) => (x ?? "").trim() !== "").join(" · "))),
+        el("dt", {}, "最近活动"), el("dd", {}, localTime(c.last_at))),
+      el("p", { class: "empty" }, c.recent[0] ? dash(c.recent[0].title) : "这一条没有最近一步。"));
+    const open = () => openDrawer({
+      eyebrow: "CASE / 卡点", title: dash(c.title), sub: dash(c.key) + " · " + bandWord(c.band),
+      body: [
+        card("当前态", "取最后一条当当前态", [
+          ["status", statusCell(c.status)],
+          ["谁 → 交给谁", handOff(c.by, c.to)],
+          ["最近活动", localTime(c.last_at)],
+          ["共几条", String(c.entries)],
+        ]),
+        ...c.recent.slice(0, 8).map((e) => card(dash(e.kind), localTime(e.at), [
+          ["这一步", dash(e.title)],
+          ["detail", dash(e.detail)],
+          ["谁 → 交给谁", handOff(e.by, e.to)],
+        ])),
+      ],
+    });
+    cardEl.addEventListener("click", open);
+    cardEl.addEventListener("keydown", (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); open(); } });
+    return cardEl;
+  });
+  out.push(section("正在卡住的事", "按最近动过的排前面；完整历史在「时间线」",
+    cards.length === 0
+      ? emptyNote("没有红 / 黄 / 等人给一句话的 case —— 当前没有卡点。")
+      : el("div", { class: "grid" }, ...cards)));
   return out;
 }
 
@@ -1318,7 +2219,7 @@ const grantKindLabel = (kind: string): string =>
 // 手里这一份是谁的那一份（服务端认不出时也照实写「认不出」）。
 function grantsCrumb(v: GrantsView): Kid {
   const parts: Kid[] = [
-    el("a", { href: "#/grants" }, "看板"),
+    el("a", { href: "#/system?tab=gateway" }, "看板"),
     el("span", { class: "sep" }, "›"),
     el("span", {}, "授权"),
     el("span", { class: "sep" }, "｜"),
@@ -1362,14 +2263,14 @@ function grantSubjectCell(r: GrantRow, slot: string): Kid {
 // 一筛就缩水，换不回全量、也换不到第二个人）。
 function grantPicker(v: GrantsView): Kid {
   const links: Kid[] = [
-    el("a", { class: v.scope.ref === "" ? "pg on" : "pg", href: "#/grants" },
+    el("a", { class: v.scope.ref === "" ? "pg on" : "pg", href: "#/system?tab=gateway" },
       "全量 · " + String(v.total) + " 条"),
   ];
   for (const sub of v.subjects) {
     const nm = (sub.name ?? "") === "" ? sub.ref : sub.name;
     links.push(el("a", {
       class: v.scope.ref === sub.ref ? "pg on" : "pg",
-      href: "#/grants?who=" + encodeURIComponent(sub.ref),
+      href: "#/system?tab=gateway&who=" + encodeURIComponent(sub.ref),
     }, el("span", { class: "chip" }, grantKindLabel(sub.kind)), " ",
       nm + "（" + sub.ref + "）"));
   }
@@ -1442,61 +2343,205 @@ function renderGrants(d: Data): Kid[] {
   return out;
 }
 
-// 授权表 —— 读者：管理者 / 想知道「谁被允许做什么」的人。
-// 页名是答案，问题句是它唯一要回答的那句话（与「数据流」页分开：那里答「通道开着吗」）。
-const grantsPage: Page = {
-  id: "grants", group: "组织", label: "授权", wired: true,
-  question: "谁被允许对谁做什么？", view: renderGrants,
-};
+// 页面注册表。顺序就是侧栏顺序；分组是「问题」，页名是「答案」。
+// 网关 —— 从「数据流」里拆出来的执行面。那一页回答「每个 bot 手里有什么」，
+// 这一页只回答「gateway 真吃的是哪份配置、relay 的执行口径是什么」。
+// 两个问题、两个变化节奏：换 bot 不改 config，改 config 不改 bot 名单。
+function renderGateway(d: Data): Kid[] {
+  const v = d.dataflow;
+  if (!v) {
+    return [banner("bad", "读不到网关观测", [
+      el("span", {}, d.dataflowErr === "" ? "服务没回 anc.dataflow/v1" : d.dataflowErr),
+    ])];
+  }
+  const out: Kid[] = [];
+  if ((v.error ?? "") !== "") out.push(banner("bad", "网关读不动", [el("span", {}, dash(v.error))]));
+  const rl = v.relay;
+  const open = !rl.declared || rl.timeout_secs !== 0;
+  const e = v.exec;
+  const projects = Array.isArray(e.projects) ? e.projects : [];
 
-// 审计 —— 读者：管理者 / 关心「谁碰了什么」的人。排在「时间线」后面：
-// 一个讲「人怎么说的」，一个讲「机器记下来的是什么」。
-const auditPage: Page = {
-  id: "audit", group: "记录", label: "审计", wired: true,
-  question: "谁在什么时候、对谁、行使了什么（含被拒的）？", view: renderAudit,
-};
-// 时间线 —— 读者：跟进的人 / 老板。它排在「项目」后面：一个讲「有哪几件事」，一个讲「卡在哪一步」。
-const timelinePage: Page = {
-  id: "timeline", group: "记录", label: "时间线", wired: true,
-  question: "卡在哪、谁在跟、下一步是谁的决定？", view: renderTimeline,
-};
+  out.push(el("div", { class: "gw-grid" },
+    el("section", { class: "glass gw-card" },
+      el("header", {},
+        el("p", { class: "eyebrow" }, "RELAY", el("span", {}, "bot 之间的通道")),
+        el("span", { class: "gw-state " + (open ? "bad" : "ok") }, open ? "开着" : "关着")),
+      el("h2", {}, open ? "通道默认放行" : "通道零绑定"),
+      el("p", { class: "gw-lead" }, dash(rl.note)),
+      el("div", { class: "gw-facts" },
+        el("div", {}, el("span", {}, "声明"), el("b", {}, rl.declared ? "有" : "没有")),
+        el("div", {}, el("span", {}, "超时"), el("b", {}, rl.timeout_secs !== 0 ? rl.timeout_secs + "s" : "∞")),
+        el("div", {}, el("span", {}, "口径"), el("b", {}, open ? "上游默认" : "默认拒"))),
+      el("p", { class: "gw-note" }, "这一格读的是执行面：gateway 真正吃进去的那份配置。")),
+    el("section", { class: "glass gw-card" },
+      el("header", {},
+        el("p", { class: "eyebrow" }, "EXECUTE", el("span", {}, "执行面")),
+        el("span", { class: "gw-state " + (e.config_present ? "ok" : "gray") }, e.config_present ? "在位" : "缺配置")),
+      el("h2", {}, e.config_present ? "config.toml 在位" : "没有读到 config.toml"),
+      el("p", { class: "gw-lead" },
+        e.config_present
+          ? "策略面说得再好，也得它真吃上了才算。"
+          : dash(e.note ?? "gateway 还没生成或没指向这份配置。")),
+      el("div", { class: "gw-facts" },
+        el("div", {}, el("span", {}, "指纹"), el("b", {}, e.has_fingerprint ? "anc 生成" : "手写 / 他源")),
+        el("div", {}, el("span", {}, "project"), el("b", {}, e.config_present ? String(projects.length) : "—")),
+        el("div", {}, el("span", {}, "生成于"), el("b", {}, e.has_fingerprint ? localTime(e.generated_at ?? "") : "—"))),
+      projects.length > 0
+        ? el("p", { class: "gw-projects mono" }, projects.join("  ·  "))
+        : el("p", { class: "gw-note" }, e.config_present ? "一个 project 都没扫到 —— 配置可能是空的。" : "配置不在，没有 project 可数。"))));
+
+  out.push(section("结构性风险", "与 `anc render --check` 同一套判据（渲染器里的 SecurityGaps）",
+    v.gaps.length === 0
+      ? el("p", { class: "empty" },
+          e.config_present
+            ? "该显式声明的安全段都在，这条判据没发现结构性缺口。"
+            : "还没有可检查的配置。",
+          cannot(" —— 这只说明 config 写对了，不说明没人越权（那要有事件面）。"))
+      : el("ul", { class: "risk-list" }, ...v.gaps.map((g) => el("li", {}, g)))));
+
+  const rows: Kid[][] = v.bots.map((b) => [
+    el("span", { class: "mono" }, b.project), dash(b.role), el("span", { class: "mono" }, dash(b.mode)),
+    dash(b.model),
+    b.tools.length === 0 ? cannot("空（没预授权）") : el("span", { class: "mono" }, b.tools.join(", ")),
+    b.inbound === 0 ? cannot("没配") : String(b.inbound) + " 人",
+  ]);
+  out.push(section("执行面上的 bot", "真相源算出来的白名单与入站授权 —— 入站只出人数，不出标识符",
+    v.bots.length === 0 ? emptyNote("没有启用的成员 —— 没有可授权的对象。")
+      : table(["bot", "角色", "工具档", "模型", "harness 白名单", "入站授权"], rows)));
+
+  out.push(section("还缺什么", "如实列 —— 缺的部分不许用「图好看」补上",
+    v.missing.length === 0 ? emptyNote("没有已知缺口。")
+      : el("ul", { class: "risk-list" }, ...v.missing.map((m) => el("li", {}, m)))));
+  return out;
+}
+
+// 关系图谱 —— 一张只画「结构」的图。节点来自真相源 + 运行态，连线只表示挂靠关系。
+// 它不是装饰：点节点能打开同一个详情抽屉，和命令面板里搜出来的是同一份字段。
+function renderGraph(d: Data): Kid[] {
+  const b = d.board;
+  if (!b) return [noBoard(d)];
+  const bots = d.runtime && d.runtime.wired ? d.runtime.bots : [];
+  const rows: Array<[string, number, string]> = [
+    ["业务域", b.domains.length, "domain"], ["项目", b.projects.length, "project"],
+    ["成员", b.members.length, "member"], ["Agent", agentsOf(b).length, "agent"], ["bot", bots.length, "bot"],
+  ];
+  return [
+    el("section", { class: "graph-stage" },
+      el("canvas", { class: "org-canvas", "aria-label": "组织关系图" }),
+      el("div", { class: "graph-counts" }, ...rows.map(([k, n, cls]) =>
+        el("div", { class: "gc " + cls }, el("b", {}, String(n)), el("span", {}, k))))),
+    section("这张图怎么读", "只画结构，不画业务流；不认识的节点不补",
+      el("div", { class: "grid" },
+        card("连线", "挂靠关系", [["业务域 → 项目", "项目属于哪块业务"], ["项目 → bot", "bot 服务哪个项目"], ["业务域 → 成员", "成员负责哪块业务"]]),
+        card("不画什么", "避免误读", [["业务流", "不在这张图里"], ["消息", "通道状态看「系统 · 数据流」"], ["权限", "看「系统 · 网关与授权」"]]),
+        card("数据从哪来", "两份投影", [["结构", "anc.board/v2"], ["运行态", "anc.runtime/v1"], ["缺一份", "图仍然画，缺口在页脚说明"]]))),
+  ];
+}
+
+// 系统 —— 基础设施类信息集中到一页。
+// 运行矩阵 / 网关 / 数据流 / 热层 / 授权，这些是「异常时出现、正常时收起」的东西，
+// 不该各占一条主导航。旧 hash（#/runtime 等）仍能打开，落到对应标签。
+type SystemTab = { id: string; label: string; hint: string; view: (d: Data) => Kid[] };
+
+const SYSTEM_TABS: SystemTab[] = [
+  { id: "runtime", label: "运行与连接", hint: "每个 bot 真的能回话吗", view: renderRuntime },
+  { id: "gateway", label: "网关与授权", hint: "执行面配置 + 谁被允许做什么", view: (d) => [...renderGateway(d), ...renderGrants(d)] },
+  { id: "dataflow", label: "数据流", hint: "通道开着吗、手里有什么", view: renderDataflow },
+  { id: "hot", label: "热层", hint: "还没落库的事", view: renderHot },
+];
+
+function activeSystemTab(): SystemTab {
+  const here = currentId();
+  const alias = here === "grants" ? "gateway" : here;
+  const q = (hashQuery().get("tab") ?? "").trim();
+  return SYSTEM_TABS.find((t) => t.id === q)
+    ?? SYSTEM_TABS.find((t) => t.id === alias)
+    ?? SYSTEM_TABS[0]!;
+}
+
+function systemHref(id: string): string {
+  const who = (hashQuery().get("who") ?? "").trim();
+  if (id === "gateway" && who !== "") return "#/system?tab=gateway&who=" + encodeURIComponent(who);
+  return "#/system?tab=" + id;
+}
+
+function renderSystem(d: Data): Kid[] {
+  const cur = activeSystemTab();
+  const tabs = el("div", { class: "subtabs", role: "tablist" },
+    ...SYSTEM_TABS.map((t) => {
+      const attrs: Attrs = {
+        class: t.id === cur.id ? "subtab active" : "subtab",
+        href: systemHref(t.id), role: "tab",
+      };
+      if (t.id === cur.id) attrs["aria-selected"] = "true";
+      return el("a", attrs, el("b", {}, t.label), el("small", {}, t.hint));
+    }));
+  return [tabs, ...cur.view(d)];
+}
+
+// 页面注册表。顺序就是侧栏顺序；分组是「问题」，页名是「答案」。
+// 这一版把导航收敛成六组：基础设施不再各占一条，组织关系落到「成员与 Agent」。
 const overviewPage: Page = {
-  id: "overview", group: "现在", label: "总览", wired: true,
-  question: "现在有没有事？", view: renderOverview,
+  id: "overview", group: "总览", label: "总览", icon: "overview", wired: true,
+  question: "现在有没有事、要不要我动手？",
+  sub: "一张运营态势图：校验、待批、运行、热层、资产，五路信号汇到同一个视野里。",
+  view: renderOverview,
 };
-// 待批 —— 读者：该点头的人。它是全看板唯一能写的一页，所以排在最靠前：
-// 整块看板只有它等着人动手，而「有没有卡在等我」正是「现在有没有事」的下一句。
 const approvalsPage: Page = {
-  id: "approvals", group: "现在", label: "待批", wired: true,
+  id: "approvals", group: "总览", label: "待批", icon: "check", wired: true,
   question: "哪几件事在等人点头、该谁点？", view: renderApprovals,
 };
-const orgPage: Page = {
-  id: "org", group: "组织", label: "组织", wired: true,
-  question: "公司长什么样、边界在哪？", view: renderOrg,
+const graphPage: Page = {
+  id: "graph", group: "组织", label: "关系图谱", icon: "graph", wired: true,
+  question: "业务域、项目、成员、bot 是怎么挂在一起的？",
+  sub: "节点全部来自真相源与运行态投影；连线只表示「挂在哪」，不表示业务流。",
+  view: renderGraph,
+};
+const membersPage: Page = {
+  id: "members", group: "组织", label: "成员管理", icon: "users", wired: true,
+  question: "谁在负责什么、身上挂着哪些 Agent、现在在做什么？",
+  sub: "一人一张卡，点开是身份、名下 Agent 的接入与在线状态、当前在做的事；每一段关系都标了推导依据。",
+  view: renderMembers,
+};
+const domainsPage: Page = {
+  id: "domains", group: "组织", label: "业务域", icon: "grid", wired: true,
+  question: "一块业务是什么、谁在做、数据在哪？", view: renderDomains,
 };
 const projectsPage: Page = {
-  id: "projects", group: "组织", label: "项目", wired: true,
-  question: "谁在做什么、到几号、卡住找谁？", view: renderProjects,
+  id: "projects", group: "工作", label: "项目", icon: "layers", wired: true,
+  question: "谁在做什么、到几号、卡住找谁、进度到哪？",
+  sub: "周期时间消耗按原文日期推算；交付进度没有真相源时明确留白。",
+  view: renderProjects,
 };
-const runtimePage: Page = {
-  id: "runtime", group: "运行", label: "运行态", wired: true,
-  question: "每个 bot 活着吗、真的能回话吗？", view: renderRuntime,
-};
-const dataflowPage: Page = {
-  id: "dataflow", group: "运行", label: "数据流", wired: true,
-  question: "通道开着吗、每个 bot 手里有什么？", view: renderDataflow,
-};
-// 页名还叫「沉淀」（那是这一块最终要回答的），但这一页现在只答得了「原料有哪些」——
-// 所以问题句按**现在真答得了**的写，不按以后的写。口径差在哪，页内写清了。
-const assetsPage: Page = {
-  id: "assets", group: "原料", label: "沉淀", wired: true,
-  question: "手上有什么料、沉淀到哪一层了？", view: renderAssets,
-};
-// 上下文 —— 读者：FDE / 想看清「这个 agent 眼里的世界」的人。
-// 排在「项目」后面：一个讲「有哪几件事」，一个讲「接进去的那个人看到的边界是什么」。
 const contextPage: Page = {
-  id: "context", group: "组织", label: "上下文", wired: true,
+  id: "context", group: "工作", label: "上下文", icon: "context", wired: true,
   question: "一个 agent 的工作上下文是什么？", view: renderContext,
+};
+const timelinePage: Page = {
+  id: "timeline", group: "记录", label: "时间线", icon: "clock", wired: true,
+  question: "卡在哪、谁在跟、下一步是谁的决定？", view: renderTimeline,
+};
+const casesPage: Page = {
+  id: "cases", group: "记录", label: "卡点", icon: "alert", wired: true,
+  question: "现在哪几件事正在卡住、谁该动？", view: renderCases,
+};
+const auditPage: Page = {
+  id: "audit", group: "记录", label: "审计", icon: "shield", wired: true,
+  question: "谁在什么时候、对谁、行使了什么（含被拒的）？", view: renderAudit,
+};
+const assetsPage: Page = {
+  id: "assets", group: "资产", label: "原料", icon: "box", wired: true,
+  question: "手上有什么料、多久没动了？", view: renderAssets,
+};
+const sedimentPage: Page = {
+  id: "sediment", group: "资产", label: "沉淀", icon: "strata", wired: true,
+  question: "料怎么分层、哪一层现在是真数？", view: renderSediment,
+};
+const systemPage: Page = {
+  id: "system", group: "系统", label: "运行与连接", icon: "pulse", wired: true,
+  question: "基础设施还健康吗、执行面和授权有没有缺口？",
+  sub: "运行矩阵 / 网关 / 授权 / 数据流 / 热层集中在这里；正常时不打扰，异常时才要人看。",
+  view: renderSystem,
 };
 
 // ---------- 上下文页：一个 agent 的工作上下文 ----------
@@ -1897,9 +2942,25 @@ function paintSediment(scope: HTMLElement, motion: boolean): void {
     stream.append(tk);
   });
 }
-const PAGES: Page[] = [overviewPage, approvalsPage, orgPage, projectsPage, contextPage, grantsPage, timelinePage, auditPage, runtimePage, dataflowPage, assetsPage];
+const PAGES: Page[] = [
+  overviewPage, approvalsPage,
+  projectsPage, contextPage,
+  graphPage, membersPage, domainsPage,
+  timelinePage, casesPage, auditPage,
+  assetsPage, sedimentPage,
+  systemPage,
+];
+
+// 旧 hash 仍要能打开：这些页并进「系统」或「成员与 Agent」之后，书签和飞书里的旧链接不能断。
+// 只改写落点，不改语义 —— 页面自己会按 tab 参数决定显示哪一段。
+const LEGACY: Record<string, string> = {
+  runtime: "system", dataflow: "system", gateway: "system", hot: "system", grants: "system",
+  roles: "members", org: "overview",
+};
 
 function pageFor(id: string): Page {
+  const to = LEGACY[id];
+  if (to !== undefined) return to === "members" ? membersPage : to === "system" ? systemPage : overviewPage;
   for (const p of PAGES) if (p.id === id) return p;
   return overviewPage;
 }
@@ -2017,7 +3078,7 @@ function footer(): HTMLElement {
 // 看板是天天看的工具，每次重取都全屏重播一遍进场，很快就变成噪音。
 let lastPageId = "";
 
-function shell(): void {
+function legacyShell(): void {
   if (!root) return;
   const page = pageFor(currentId());
   const d = cache;
@@ -2087,12 +3148,968 @@ window.addEventListener("hashchange", () => {
     void loadContext();
     return;
   }
-  // 授权表那一页同理：换视角只重取它自己（那是**参数**，不是刷新）。
-  if (pageFor(currentId()).id === "grants") {
+  // 授权表并进了「系统 · 网关与授权」：换视角只重取它自己（那是**参数**，不是刷新）。
+  if (pageFor(currentId()).id === "system" && activeSystemTab().id === "gateway" && (hashQuery().get("who") ?? "") !== "") {
     void loadGrants();
     return;
   }
   shell();
 });
+
+// ---------- 新外壳：抽屉、命令面板、提示 ----------
+//
+// 这一层只做「把人带到该看的地方」：详情抽屉不写任何东西，命令面板只做导航。
+// 看板仍然只有一个写口 —— 「待批」页的点头。
+
+type DrawerSpec = { eyebrow: string; title: string; sub: string; body: Kid[] };
+type PaletteItem = { label: string; hint: string; icon: string; href?: string; run?: () => void };
+
+let drawerLayer: HTMLElement | null = null;
+let drawerEyebrow: HTMLElement | null = null;
+let drawerTitle: HTMLElement | null = null;
+let drawerSub: HTMLElement | null = null;
+let drawerBody: HTMLElement | null = null;
+let paletteLayer: HTMLElement | null = null;
+let paletteInput: HTMLInputElement | null = null;
+let paletteList: HTMLElement | null = null;
+let toastEl: HTMLElement | null = null;
+let toastTimer = 0;
+let paletteResults: PaletteItem[] = [];
+let paletteActive = 0;
+
+function showToast(msg: string): void {
+  if (!toastEl) {
+    toastEl = el("div", { class: "toast", role: "status" });
+    document.body.append(toastEl);
+  }
+  toastEl.textContent = msg;
+  toastEl.classList.add("on");
+  window.clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => toastEl?.classList.remove("on"), 2200);
+}
+
+function openDrawer(spec: DrawerSpec): void {
+  if (!drawerLayer || !drawerBody || !drawerTitle || !drawerSub || !drawerEyebrow) return;
+  drawerEyebrow.textContent = spec.eyebrow;
+  drawerTitle.textContent = spec.title;
+  drawerSub.textContent = spec.sub;
+  drawerBody.replaceChildren(...spec.body);
+  drawerLayer.dataset.open = "1";
+  document.body.style.overflow = "hidden";
+}
+
+function closeDrawer(): void {
+  if (!drawerLayer) return;
+  drawerLayer.dataset.open = "0";
+  document.body.style.overflow = "";
+}
+
+function closePalette(): void {
+  if (!paletteLayer) return;
+  paletteLayer.dataset.open = "0";
+  document.body.style.overflow = "";
+}
+
+function paletteItems(): PaletteItem[] {
+  const out: PaletteItem[] = [];
+  for (const p of PAGES) {
+    out.push({ label: p.label, hint: p.group + " · " + p.question, icon: p.icon, href: "#/" + p.id });
+  }
+  const d = cache;
+  if (d?.board) {
+    for (const x of d.board.domains) {
+      out.push({
+        label: x.name, hint: "业务域 · " + x.slug, icon: "grid",
+        run: () => openDrawer({
+          eyebrow: "DOMAIN / 业务域", title: dash(x.name), sub: dash(x.slug),
+          body: [card(dash(x.name), dash(x.slug), [
+            ["是什么", dash(x.what)], ["谁在做", dash(x.who_label)],
+            ["数据在哪", dash(x.data)], ["原件来源", dash(x.sources)], ["口径 / 术语", dash(x.terms)],
+          ])],
+        }),
+      });
+    }
+    for (const x of d.board.projects) {
+      out.push({
+        label: x.name, hint: "项目 · " + x.owner_label + " · " + x.period, icon: "layers",
+        run: () => openProjectDrawer(d, d.board!, x),
+      });
+    }
+    for (const x of d.board.members) {
+      out.push({
+        label: x.display_name || x.name, hint: "成员 · " + x.role + (x.disabled ? " · 已停用" : ""), icon: "users",
+        run: () => openMemberDrawer(d, d.board!, x),
+      });
+    }
+    for (const x of agentsOf(d.board)) {
+      out.push({
+        label: x.name || x.slug, hint: "业务 Agent · " + x.domain + " · " + x.role, icon: "spark",
+        run: () => openAgentDrawer(d, d.board!, x),
+      });
+    }
+  }
+  if (d?.runtime?.wired) {
+    for (const x of d.runtime.bots) {
+      out.push({
+        label: x.project, hint: "bot · " + runState(x.state).label, icon: "pulse",
+        run: () => openDrawer({
+          eyebrow: "BOT / 运行态", title: dash(x.project), sub: runState(x.state).label,
+          body: [card(dash(x.project), x.state, [["状态", runState(x.state).label], ["依据", dash(x.why)]])],
+        }),
+      });
+    }
+  }
+  if (d?.approvals?.wired) {
+    for (const x of d.approvals.pending) {
+      out.push({ label: x.title, hint: "待批 · " + dash(x.who) + " → " + dash(x.to), icon: "check", href: "#/approvals" });
+    }
+  }
+  if (d?.hot?.wired) {
+    for (const x of d.hot.entries) {
+      out.push({ label: x.title, hint: "热层 · " + dash(x.status), icon: "flame", href: "#/system?tab=hot" });
+    }
+  }
+  if (d?.timeline?.wired) {
+    for (const x of d.timeline.cases) {
+      out.push({ label: x.title, hint: "case · " + bandWord(x.band), icon: "clock", href: "#/timeline" });
+    }
+  }
+  return out;
+}
+
+function runPaletteItem(item: PaletteItem): void {
+  closePalette();
+  if (item.href) {
+    location.hash = item.href;
+    return;
+  }
+  item.run?.();
+}
+
+function setPaletteActive(i: number): void {
+  if (!paletteList || paletteResults.length === 0) return;
+  paletteActive = (i + paletteResults.length) % paletteResults.length;
+  Array.from(paletteList.children).forEach((n, j) => n.classList.toggle("active", j === paletteActive));
+  const active = paletteList.children[paletteActive];
+  if (active instanceof HTMLElement) active.scrollIntoView({ block: "nearest" });
+}
+
+function renderPalette(q: string): void {
+  if (!paletteList) return;
+  const needle = q.trim().toLowerCase();
+  const all = paletteItems();
+  paletteResults = (needle === "" ? all : all.filter((x) => (x.label + " " + x.hint).toLowerCase().includes(needle))).slice(0, 40);
+  paletteActive = 0;
+  if (paletteResults.length === 0) {
+    paletteList.replaceChildren(el("div", { class: "palette-item" }, el("span", { class: "pl" }, el("b", {}, "没有匹配"), el("small", {}, "换个词试试：业务域、项目、成员、bot、待批"))));
+    return;
+  }
+  paletteList.replaceChildren(...paletteResults.map((item, i) => {
+    const row = el("div", { class: i === 0 ? "palette-item active" : "palette-item", role: "button" },
+      el("span", { class: "pi" }, icon(item.icon, 13)),
+      el("span", { class: "pl" }, el("b", {}, item.label), el("small", {}, item.hint)),
+      el("span", { class: "pk" }, item.href ? "↵" : "详情"));
+    row.addEventListener("mouseenter", () => setPaletteActive(i));
+    row.addEventListener("click", () => runPaletteItem(item));
+    return row;
+  }));
+}
+
+function openPalette(): void {
+  if (!paletteLayer || !paletteInput) return;
+  paletteLayer.dataset.open = "1";
+  paletteInput.value = "";
+  renderPalette("");
+  document.body.style.overflow = "hidden";
+  paletteInput.focus();
+}
+
+function paletteKey(e: KeyboardEvent): void {
+  if (e.key === "ArrowDown") { e.preventDefault(); setPaletteActive(paletteActive + 1); return; }
+  if (e.key === "ArrowUp") { e.preventDefault(); setPaletteActive(paletteActive - 1); return; }
+  if (e.key === "Enter") {
+    e.preventDefault();
+    const item = paletteResults[paletteActive];
+    if (item) runPaletteItem(item);
+    return;
+  }
+  if (e.key === "Escape") { e.preventDefault(); closePalette(); }
+}
+
+document.addEventListener("keydown", (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+    e.preventDefault();
+    openPalette();
+    return;
+  }
+  if (e.key !== "Escape") return;
+  if (paletteLayer?.dataset.open === "1") { e.preventDefault(); closePalette(); return; }
+  if (drawerLayer?.dataset.open === "1") { e.preventDefault(); closeDrawer(); }
+});
+
+// ---------- 总览背景：一张只画「结构」的神经场 ----------
+//
+// 节点来自真实投影：业务域 / 项目 / 成员 / bot。连线只表示「挂在哪」，不表示
+// 任何业务含义；脉冲只是让它看起来是活的，不承载数据。零数据时只画中心点，
+// 不拿装饰节点冒充「有东西」。
+type FieldNode = { x: number; y: number; r: number; color: string; label: string; kind: string };
+type FieldLink = { a: number; b: number; color: string; seed: number; bend: number };
+
+let fieldRaf = 0;
+let fieldResize: ResizeObserver | null = null;
+
+function stopField(): void {
+  if (fieldRaf) cancelAnimationFrame(fieldRaf);
+  fieldRaf = 0;
+  fieldResize?.disconnect();
+  fieldResize = null;
+}
+
+function mountField(scope: HTMLElement, d: Data): void {
+  stopField();
+  const canvas = scope.querySelector<HTMLCanvasElement>(".field-canvas");
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  const light = currentTheme() === "light";
+  const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const nodes: FieldNode[] = [];
+  const links: FieldLink[] = [];
+  // 尘埃与轨道只是**气氛**，不带标签、不参与命中 —— 有数据的节点永远比它们亮。
+  const dust: Array<{ x: number; y: number; r: number; a: number; ph: number }> = [];
+  let W = 0;
+  let H = 0;
+  let dpr = 1;
+  let span = 0;
+  const TAU = Math.PI * 2;
+
+  const build = (): void => {
+    W = Math.max(320, canvas.clientWidth);
+    H = Math.max(260, canvas.clientHeight);
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.round(W * dpr);
+    canvas.height = Math.round(H * dpr);
+    nodes.length = 0;
+    links.length = 0;
+    const cx = W * 0.52;
+    const cy = H * 0.43;
+    span = Math.min(W, H);
+    dust.length = 0;
+    for (let i = 0; i < 56; i++) {
+      const a = i * 2.39996;
+      const rr = Math.sqrt((i + 0.5) / 56);
+      dust.push({
+        x: cx + Math.cos(a) * rr * W * 0.46,
+        y: cy + Math.sin(a) * rr * H * 0.42,
+        r: 0.5 + (i % 3) * 0.28,
+        a: 0.05 + (i % 5) * 0.012,
+        ph: i * 0.7,
+      });
+    }
+    nodes.push({ x: cx, y: cy, r: 5.5, color: light ? "36,38,34" : "236,236,232", label: "ANC", kind: "core" });
+
+    const domainPos = new Map<string, number>();
+    const domains = d.board ? d.board.domains : [];
+    const dn = Math.min(domains.length, 14);
+    for (let i = 0; i < dn; i++) {
+      const x = domains[i]!;
+      const a = 0.2 + (i / Math.max(1, dn)) * TAU;
+      const idx = nodes.length;
+      nodes.push({ x: cx + Math.cos(a) * span * 0.27, y: cy + Math.sin(a) * span * 0.23, r: 4.2, color: light ? "158,118,38" : "230,207,152", label: x.name, kind: "domain" });
+      domainPos.set(x.slug, idx);
+      links.push({ a: 0, b: idx, color: light ? "158,118,38" : "230,207,152", seed: (i * 0.17) % 1, bend: 0.10 });
+    }
+
+    const projectPos = new Map<string, number>();
+    const projects = d.board ? d.board.projects : [];
+    const pn = Math.min(projects.length, 22);
+    for (let i = 0; i < pn; i++) {
+      const x = projects[i]!;
+      const a = 1.25 + (i / Math.max(1, pn)) * TAU;
+      const idx = nodes.length;
+      nodes.push({ x: cx + Math.cos(a) * span * 0.42, y: cy + Math.sin(a) * span * 0.34, r: 3.4, color: light ? "104,96,178" : "195,188,242", label: x.name, kind: "project" });
+      projectPos.set(x.slug, idx);
+      links.push({ a: domainPos.get(x.domain) ?? 0, b: idx, color: light ? "104,96,178" : "195,188,242", seed: (i * 0.13 + 0.3) % 1, bend: 0.14 });
+    }
+
+    const members = d.board ? d.board.members : [];
+    const mn = Math.min(members.length, 36);
+    for (let i = 0; i < mn; i++) {
+      const x = members[i]!;
+      const a = 2.4 + (i / Math.max(1, mn)) * TAU;
+      const idx = nodes.length;
+      nodes.push({ x: cx + Math.cos(a) * span * 0.56, y: cy + Math.sin(a) * span * 0.44, r: 2.4, color: light ? "42,132,108" : "172,224,207", label: x.display_name || x.name, kind: "member" });
+      let di = 0;
+      for (const s of x.domains) {
+        const hit = domainPos.get(s);
+        if (hit !== undefined) { di = hit; break; }
+      }
+      links.push({ a: di, b: idx, color: light ? "42,132,108" : "172,224,207", seed: (i * 0.11 + 0.6) % 1, bend: 0.08 });
+    }
+
+    const bots = d.runtime && d.runtime.wired ? d.runtime.bots : [];
+    const bn = Math.min(bots.length, 20);
+    for (let i = 0; i < bn; i++) {
+      const x = bots[i]!;
+      const a = 0.75 + (i / Math.max(1, bn)) * TAU;
+      const idx = nodes.length;
+      nodes.push({ x: cx + Math.cos(a) * span * 0.36, y: cy + Math.sin(a) * span * 0.30, r: 3.0, color: light ? "52,122,152" : "172,214,232", label: x.project, kind: "bot" });
+      links.push({ a: projectPos.get(x.project) ?? 0, b: idx, color: light ? "52,122,152" : "172,214,232", seed: (i * 0.19 + 0.4) % 1, bend: 0.12 });
+    }
+  };
+
+  const qp = (a: FieldNode, b: FieldNode, mx: number, my: number, u: number): { x: number; y: number } => {
+    const v = 1 - u;
+    return { x: v * v * a.x + 2 * v * u * mx + u * u * b.x, y: v * v * a.y + 2 * v * u * my + u * u * b.y };
+  };
+
+  const draw = (now: number): void => {
+    const t = now / 1000;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    const core = nodes[0]!;
+    const halo = ctx.createRadialGradient(core.x, core.y, 0, core.x, core.y, 92);
+    halo.addColorStop(0, light ? "rgba(168,130,50,0.05)" : "rgba(230,207,152,0.18)");
+    halo.addColorStop(1, light ? "rgba(168,130,50,0)" : "rgba(230,207,152,0)");
+    ctx.fillStyle = halo;
+    ctx.beginPath();
+    ctx.arc(core.x, core.y, 92, 0, TAU);
+    ctx.fill();
+
+    // 同心轨道：只是尺度参照，不表示任何层级或流向。
+    ctx.save();
+    ctx.setLineDash([2, 8]);
+    for (let k = 1; k <= 3; k++) {
+      ctx.strokeStyle = light
+        ? "rgba(30,32,28," + (0.075 - k * 0.012) + ")"
+        : "rgba(236,236,232," + (0.042 - k * 0.008) + ")";
+      ctx.lineWidth = 0.6;
+      ctx.beginPath();
+      ctx.arc(core.x, core.y, span * (0.16 + k * 0.12), 0, TAU);
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    for (const p of dust) {
+      const tw = 0.5 + 0.5 * Math.sin(t * 0.45 + p.ph);
+      ctx.fillStyle = light
+        ? "rgba(58,62,54," + (p.a * (0.55 + 0.45 * tw) * 1.8).toFixed(3) + ")"
+        : "rgba(240,236,224," + (p.a * (0.35 + 0.65 * tw)).toFixed(3) + ")";
+      ctx.beginPath();
+      ctx.arc(p.x, p.y + Math.sin(t * 0.16 + p.ph) * 5, p.r, 0, TAU);
+      ctx.fill();
+    }
+
+    for (const l of links) {
+      const a = nodes[l.a];
+      const b = nodes[l.b];
+      if (!a || !b) continue;
+      const mx = (a.x + b.x) / 2 + (b.y - a.y) * l.bend;
+      const my = (a.y + b.y) / 2 - (b.x - a.x) * l.bend;
+      ctx.strokeStyle = "rgba(" + l.color + ",0.13)";
+      ctx.lineWidth = 0.8;
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.quadraticCurveTo(mx, my, b.x, b.y);
+      ctx.stroke();
+      if (reduced) continue;
+      const u = (t * 0.10 + l.seed) % 1;
+      const p = qp(a, b, mx, my, u);
+      const pulse = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, 6);
+      pulse.addColorStop(0, "rgba(" + l.color + ",0.85)");
+      pulse.addColorStop(1, "rgba(" + l.color + ",0)");
+      ctx.fillStyle = pulse;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 6, 0, TAU);
+      ctx.fill();
+    }
+
+    for (const n of nodes) {
+      const glow = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, n.r * 5);
+      glow.addColorStop(0, "rgba(" + n.color + "," + (light ? (n.kind === "core" ? 0.16 : 0.13) : 0.55) + ")");
+      glow.addColorStop(1, "rgba(" + n.color + ",0)");
+      ctx.fillStyle = glow;
+      ctx.beginPath();
+      ctx.arc(n.x, n.y, n.r * 5, 0, TAU);
+      ctx.fill();
+      ctx.fillStyle = "rgba(" + n.color + ",0.95)";
+      ctx.beginPath();
+      ctx.arc(n.x, n.y, n.r, 0, TAU);
+      ctx.fill();
+      if ((n.kind === "domain" || n.kind === "project") && n.label !== "") {
+        ctx.fillStyle = light ? "rgba(28,30,26,0.78)" : "rgba(236,236,233,0.68)";
+        ctx.font = "10.5px -apple-system, 'PingFang SC', sans-serif";
+        ctx.fillText(n.label.slice(0, 12), n.x + n.r + 5, n.y + 3);
+      }
+    }
+    if (!reduced) fieldRaf = requestAnimationFrame(draw);
+  };
+
+  const start = (): void => {
+    build();
+    if (fieldRaf) cancelAnimationFrame(fieldRaf);
+    if (reduced) draw(performance.now());
+    else fieldRaf = requestAnimationFrame(draw);
+  };
+  fieldResize = new ResizeObserver(start);
+  fieldResize.observe(canvas);
+  start();
+}
+
+// ---------- 关系图谱：可缩放、可点开节点的结构图 ----------
+//
+// 与总览那张「氛围场」不同：这一张是**可操作**的。滚轮缩放、拖动平移、悬停高亮、
+// 点节点打开详情。节点和连线都来自同一份投影 —— 图上没有装饰节点。
+type OrgNode = {
+  x: number; y: number; r: number; color: string; kind: string;
+  label: string; sub: string; facts: Array<[string, string]>;
+};
+type OrgEdge = { a: number; b: number; color: string; seed: number };
+
+let orgRaf = 0;
+let orgResize: ResizeObserver | null = null;
+
+function stopOrgGraph(): void {
+  if (orgRaf) cancelAnimationFrame(orgRaf);
+  orgRaf = 0;
+  orgResize?.disconnect();
+  orgResize = null;
+}
+
+function mountOrgGraph(scope: HTMLElement, d: Data): void {
+  stopOrgGraph();
+  const canvas = scope.querySelector<HTMLCanvasElement>(".org-canvas");
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  const light = currentTheme() === "light";
+  const b = d.board;
+  if (!b) return;
+  const bots = d.runtime && d.runtime.wired ? d.runtime.bots : [];
+  const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const nodes: OrgNode[] = [];
+  const edges: OrgEdge[] = [];
+  const transform = { x: 0, y: 0, k: 1 };
+  let W = 0;
+  let H = 0;
+  let dpr = 1;
+  let hover = -1;
+  let dragging = false;
+  let moved = 0;
+  let lastX = 0;
+  let lastY = 0;
+
+  const build = (): void => {
+    W = Math.max(360, canvas.clientWidth);
+    H = Math.max(360, canvas.clientHeight);
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.round(W * dpr);
+    canvas.height = Math.round(H * dpr);
+    transform.x = W / 2;
+    transform.y = H / 2;
+    transform.k = 1;
+    nodes.length = 0;
+    edges.length = 0;
+    nodes.push({
+      x: 0, y: 0, r: 9, color: light ? "36,38,34" : "236,236,232", kind: "core", label: b.company.name || "ANC",
+      sub: b.company.platform + " · " + b.company.language,
+      facts: [["公司", b.company.name], ["平台", b.company.platform], ["业务域", String(b.domains.length)], ["项目", String(b.projects.length)]],
+    });
+    const domainIndex = new Map<string, number>();
+    b.domains.forEach((x, i) => {
+      const a = -Math.PI / 2 + (i / Math.max(1, b.domains.length)) * Math.PI * 2;
+      const idx = nodes.length;
+      nodes.push({
+        x: Math.cos(a) * W * 0.24, y: Math.sin(a) * H * 0.26, r: 6.5, color: light ? "158,118,38" : "230,207,152", kind: "domain",
+        label: x.name, sub: x.slug,
+        facts: [["是什么", x.what], ["谁在做", x.who_label], ["数据在哪", x.data], ["口径", x.terms]],
+      });
+      domainIndex.set(x.slug, idx);
+      edges.push({ a: 0, b: idx, color: light ? "158,118,38" : "230,207,152", seed: (i * 0.17) % 1 });
+    });
+    const projectIndex = new Map<string, number>();
+    b.projects.forEach((x, i) => {
+      const host = nodes[domainIndex.get(x.domain) ?? 0]!;
+      const a = Math.atan2(host.y, host.x) + ((i % 5) - 2) * 0.10;
+      const rad = 0.34 + (i % 4) * 0.028;
+      const idx = nodes.length;
+      nodes.push({
+        x: Math.cos(a) * W * rad, y: Math.sin(a) * H * rad, r: 5.2, color: light ? "104,96,178" : "195,188,242", kind: "project",
+        label: x.name, sub: x.slug,
+        facts: [["挂哪块业务", x.domain], ["卡住找谁", x.owner_label], ["周期", x.period], ["真源", x.source]],
+      });
+      projectIndex.set(x.slug, idx);
+      edges.push({ a: domainIndex.get(x.domain) ?? 0, b: idx, color: light ? "104,96,178" : "195,188,242", seed: (i * 0.13 + 0.3) % 1 });
+    });
+    b.members.forEach((x, i) => {
+      const dom = x.domains.find((s) => domainIndex.has(s));
+      const host = nodes[domainIndex.get(dom ?? "") ?? 0]!;
+      const a = Math.atan2(host.y, host.x) + ((i % 7) - 3) * 0.075;
+      const rad = 0.40 + (i % 3) * 0.02;
+      const idx = nodes.length;
+      nodes.push({
+        x: Math.cos(a) * W * rad, y: Math.sin(a) * H * rad, r: 3.8, color: light ? "42,132,108" : "172,224,207", kind: "member",
+        label: x.display_name || x.name, sub: x.role + (x.disabled ? " · 已停用" : ""),
+        facts: [["角色", x.role], ["模型", x.model], ["业务域", x.domains.join("、") || "—"], ["状态", x.disabled ? "已停用" : x.admin ? "启用 · 管理员" : "启用"]],
+      });
+      edges.push({ a: domainIndex.get(dom ?? "") ?? 0, b: idx, color: light ? "42,132,108" : "172,224,207", seed: (i * 0.11 + 0.6) % 1 });
+    });
+    agentsOf(b).forEach((x, i) => {
+      const dom = domainIndex.has(x.domain) ? x.domain : "";
+      const host = nodes[domainIndex.get(dom) ?? 0]!;
+      const a = Math.atan2(host.y, host.x) + 0.55 + ((i % 5) - 2) * 0.09;
+      const rad = 0.38 + (i % 3) * 0.02;
+      const idx = nodes.length;
+      const st = botStateOf(d, botProject(b, x.slug));
+      nodes.push({
+        x: Math.cos(a) * W * rad, y: Math.sin(a) * H * rad, r: 4.6,
+        color: light ? "168,67,99" : "227,179,196", kind: "agent",
+        label: x.name || x.slug, sub: x.role,
+        facts: [["slug", x.slug], ["铭文", x.description || "—"], ["业务域", x.domain || "—"],
+          ["岗位", x.role || "—"], ["运行态", st.label], ["harness", x.harness || "默认"]],
+      });
+      edges.push({ a: domainIndex.get(dom) ?? 0, b: idx, color: light ? "168,67,99" : "227,179,196", seed: (i * 0.23 + 0.2) % 1 });
+    });
+    bots.forEach((x, i) => {
+      const hit = projectIndex.get(x.project);
+      const host = nodes[hit ?? 0]!;
+      const a = Math.atan2(host.y, host.x) + ((i % 3) - 1) * 0.13;
+      const rad = 46 + (i % 2) * 18;
+      const idx = nodes.length;
+      nodes.push({
+        x: host.x + Math.cos(a) * rad, y: host.y + Math.sin(a) * rad, r: 4.2, color: light ? "52,122,152" : "172,214,232", kind: "bot",
+        label: x.project, sub: x.state,
+        facts: [["project", x.project], ["状态", runState(x.state).label], ["为什么", x.why]],
+      });
+      edges.push({ a: hit ?? 0, b: idx, color: light ? "52,122,152" : "172,214,232", seed: (i * 0.19 + 0.4) % 1 });
+    });
+    let maxX = 0;
+    let maxY = 0;
+    for (const n of nodes) {
+      const labelW = n.kind === "domain" || n.kind === "project" || n.kind === "core" ? 160 : 0;
+      maxX = Math.max(maxX, Math.abs(n.x) + n.r + labelW);
+      maxY = Math.max(maxY, Math.abs(n.y) + n.r + 16);
+    }
+    const fit = Math.min((W / 2 - 24) / Math.max(1, maxX), (H / 2 - 24) / Math.max(1, maxY));
+    transform.k = Math.max(0.55, Math.min(1, fit));
+  };
+
+  const project = (n: OrgNode): { x: number; y: number } => ({
+    x: transform.x + n.x * transform.k, y: transform.y + n.y * transform.k,
+  });
+
+  const hitAt = (sx: number, sy: number): number => {
+    let best = -1;
+    let bestD = 18;
+    for (let i = 0; i < nodes.length; i++) {
+      const p = project(nodes[i]!);
+      const dd = Math.hypot(p.x - sx, p.y - sy);
+      if (dd < Math.max(bestD, nodes[i]!.r * transform.k + 6)) { best = i; bestD = dd; }
+    }
+    return best;
+  };
+
+  const draw = (now: number): void => {
+    const t = now / 1000;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    const core = project(nodes[0]!);
+    const halo = ctx.createRadialGradient(core.x, core.y, 0, core.x, core.y, 150 * transform.k);
+    halo.addColorStop(0, light ? "rgba(168,130,50,0.045)" : "rgba(230,207,152,0.10)");
+    halo.addColorStop(1, light ? "rgba(168,130,50,0)" : "rgba(230,207,152,0)");
+    ctx.fillStyle = halo;
+    ctx.beginPath();
+    ctx.arc(core.x, core.y, 150 * transform.k, 0, Math.PI * 2);
+    ctx.fill();
+
+    for (const e of edges) {
+      const a = project(nodes[e.a]!);
+      const bb = project(nodes[e.b]!);
+      ctx.strokeStyle = "rgba(" + e.color + "," + (light ? "0.24" : "0.15") + ")";
+      ctx.lineWidth = 0.9;
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(bb.x, bb.y);
+      ctx.stroke();
+      if (!reduced) {
+        const u = (t * 0.12 + e.seed) % 1;
+        const px = a.x + (bb.x - a.x) * u;
+        const py = a.y + (bb.y - a.y) * u;
+        const g = ctx.createRadialGradient(px, py, 0, px, py, 5);
+        g.addColorStop(0, "rgba(" + e.color + ",0.9)");
+        g.addColorStop(1, "rgba(" + e.color + ",0)");
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(px, py, 5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    nodes.forEach((n, i) => {
+      const p = project(n);
+      const r = Math.max(2.4, n.r * transform.k);
+      const on = i === hover;
+      const glow = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r * (on ? 8 : 4.5));
+      glow.addColorStop(0, "rgba(" + n.color + "," + (light ? (on ? 0.20 : 0.12) : (on ? 0.55 : 0.34)) + ")");
+      glow.addColorStop(1, "rgba(" + n.color + ",0)");
+      ctx.fillStyle = glow;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, r * (on ? 8 : 4.5), 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "rgba(" + n.color + ",0.97)";
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+      ctx.fill();
+      if (on) {
+        ctx.strokeStyle = light ? "rgba(20,22,18,0.55)" : "rgba(255,255,255,0.5)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, r + 6, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      if ((n.kind === "domain" || n.kind === "project" || n.kind === "core") && n.label !== "") {
+        const size = n.kind === "core" ? 12 : 10.5;
+        ctx.font = "500 " + size + "px -apple-system, 'PingFang SC', sans-serif";
+        ctx.fillStyle = light
+          ? "rgba(26,28,24," + (n.kind === "core" ? 0.9 : 0.72) + ")"
+          : "rgba(236,236,233," + (n.kind === "core" ? 0.86 : 0.62) + ")";
+        const label = n.label.length > 14 ? n.label.slice(0, 14) + "…" : n.label;
+        ctx.fillText(label, p.x + r + 7, p.y + 3.5);
+      }
+    });
+    if (!reduced) orgRaf = requestAnimationFrame(draw);
+  };
+
+  const openNode = (i: number): void => {
+    const n = nodes[i];
+    if (!n) return;
+    openDrawer({
+      eyebrow: n.kind.toUpperCase() + " / 关系图谱", title: n.label, sub: n.sub,
+      body: [card(n.label, n.sub, n.facts)],
+    });
+  };
+
+  const onMove = (ev: MouseEvent): void => {
+    const rect = canvas.getBoundingClientRect();
+    const sx = ev.clientX - rect.left;
+    const sy = ev.clientY - rect.top;
+    if (dragging) {
+      const dx = ev.clientX - lastX;
+      const dy = ev.clientY - lastY;
+      moved += Math.abs(dx) + Math.abs(dy);
+      transform.x += dx;
+      transform.y += dy;
+      lastX = ev.clientX;
+      lastY = ev.clientY;
+      return;
+    }
+    hover = hitAt(sx, sy);
+    canvas.style.cursor = hover >= 0 ? "pointer" : "grab";
+  };
+  const onDown = (ev: MouseEvent): void => {
+    dragging = true;
+    moved = 0;
+    lastX = ev.clientX;
+    lastY = ev.clientY;
+    canvas.style.cursor = "grabbing";
+  };
+  const onUp = (ev: MouseEvent): void => {
+    if (dragging && moved < 5) {
+      const rect = canvas.getBoundingClientRect();
+      const i = hitAt(ev.clientX - rect.left, ev.clientY - rect.top);
+      if (i >= 0) openNode(i);
+    }
+    dragging = false;
+    canvas.style.cursor = "grab";
+  };
+  const onWheel = (ev: WheelEvent): void => {
+    ev.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    const sx = ev.clientX - rect.left;
+    const sy = ev.clientY - rect.top;
+    const wx = (sx - transform.x) / transform.k;
+    const wy = (sy - transform.y) / transform.k;
+    const k = Math.max(0.55, Math.min(2.6, transform.k * (ev.deltaY < 0 ? 1.12 : 0.89)));
+    transform.k = k;
+    transform.x = sx - wx * k;
+    transform.y = sy - wy * k;
+  };
+  canvas.addEventListener("mousemove", onMove);
+  canvas.addEventListener("mousedown", onDown);
+  canvas.addEventListener("mouseup", onUp);
+  canvas.addEventListener("mouseleave", () => { hover = -1; dragging = false; });
+  canvas.addEventListener("wheel", onWheel, { passive: false });
+  canvas.addEventListener("dblclick", () => { build(); });
+
+  build();
+  orgResize = new ResizeObserver(() => { build(); if (reduced) draw(performance.now()); });
+  orgResize.observe(canvas);
+  if (reduced) draw(performance.now());
+  else orgRaf = requestAnimationFrame(draw);
+}
+
+// ---------- 新外壳：侧栏 / 顶栏 / 页头 ----------
+let lastShellPage = "";
+
+function navBadge(p: Page, d: Data | null): Kid {
+  if (!d) return "";
+  if (p.id === "approvals" && d.approvals?.wired && d.approvals.count > 0) {
+    return el("span", { class: "nav-badge hot" }, String(d.approvals.count));
+  }
+  if (p.id === "system" && d.runtime?.wired) {
+    const n = d.runtime.bots.filter((b) => b.state === "fail").length;
+    if (n > 0) return el("span", { class: "nav-badge hot" }, String(n));
+  }
+  if (p.id === "cases" && d.timeline?.wired) {
+    const n = d.timeline.cases.filter((c) => c.band === "red").length;
+    if (n > 0) return el("span", { class: "nav-badge hot" }, String(n));
+  }
+  if (p.id === "system" && d.hot?.wired && d.hot.stale > 0) {
+    return el("span", { class: "nav-badge gold" }, String(d.hot.stale));
+  }
+  if (p.id === "audit" && d.audit) {
+    const n = d.audit.bands.denied + d.audit.bands.failed;
+    if (n > 0) return el("span", { class: "nav-badge hot" }, String(n));
+  }
+  return "";
+}
+
+function sidebar(page: Page, d: Data | null): HTMLElement {
+  const nav = el("nav", { class: "side-nav", "aria-label": "主导航" });
+  let group = "";
+  let box: HTMLElement | null = null;
+  for (const p of PAGES) {
+    if (p.group !== group) {
+      group = p.group;
+      box = el("div", { class: "nav-group" }, el("div", { class: "nav-label" }, group), el("div", { class: "nav-rail" }));
+      nav.append(box);
+    }
+    const a = el("a", {
+      class: p.id === page.id ? "nav-item active" : "nav-item",
+      href: "#/" + p.id,
+      title: p.question,
+    }, iconBox(p.icon), el("span", { class: "lab" }, p.label), el("span", { class: "nav-hint" }, p.question), navBadge(p, d));
+    if (p.id === page.id) a.setAttribute("aria-current", "page");
+    box?.append(a);
+  }
+  const c = d?.board?.company;
+  const status = d ? d.issues : null;
+  const pending = d && d.approvals && d.approvals.wired ? d.approvals.count : null;
+  const cases = d && d.timeline && d.timeline.wired ? d.timeline.cases.filter((x) => x.band === "red").length : null;
+  const bots = d && d.runtime && d.runtime.wired ? d.runtime.bots : [];
+  const botRed = d && d.runtime && d.runtime.wired ? bots.filter((x) => x.state === "fail").length : null;
+  const meter = (label: string, n: number | null, cls: string): HTMLElement =>
+    el("div", { class: "side-meter " + cls },
+      el("span", {}, label), el("b", {}, n === null ? "—" : String(n)));
+  const foot = el("div", { class: "side-foot" },
+    el("div", { class: "side-health" },
+      el("span", { class: status ? statusDot(status) : "dot" }),
+      el("span", {}, status ? statusText(status) : "读取中"),
+      el("span", { class: "micro" }, d?.board ? localTime(d.board.generated_at) : "")),
+    el("div", { class: "side-meters" },
+      meter("待批", pending, "gold"), meter("卡点", cases, "red"), meter("bot 红", botRed, "red")),
+    el("div", { class: "micro env" }, d?.board ? d.board.schema : "vault · waiting"),
+    el("div", { class: "foot-links" },
+      el("a", { href: "#/overview" }, "总览"),
+      el("a", { href: "#/timeline" }, "时间线"),
+      el("span", {}, "只读观测")));
+  const collapse = el("button", { class: "collapse-btn", type: "button", "aria-label": "收起或展开侧栏", title: "收起 / 展开侧栏" }, icon("chevronL", 14));
+  collapse.addEventListener("click", () => {
+    const app = document.querySelector(".app");
+    app?.classList.toggle("rail-min");
+    try { localStorage.setItem("anc.rail.min", app?.classList.contains("rail-min") ? "1" : "0"); } catch { /* 隐私模式不记 */ }
+  });
+  return el("aside", { class: "side" },
+    el("div", { class: "side-brand" },
+      el("span", { class: "brand-orb" }),
+      el("span", { class: "bt" }, el("b", {}, "ANC"), el("small", {}, "AI-NATIVE COMPANY")),
+      collapse),
+    el("div", { class: "side-workspace" },
+      el("span", { class: "ws-dot" }),
+      el("span", { class: "ws-text" },
+        el("b", {}, c ? dash(c.name) : "还没读到投影"),
+        el("small", {}, c ? dash(c.platform) + " · " + dash(c.timezone) : "vault · waiting"))),
+    nav, foot);
+}
+
+function copyLink(): void {
+  const url = location.href;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    void navigator.clipboard.writeText(url).then(
+      () => showToast("链接已复制"),
+      () => showToast("复制失败，手动复制地址栏"),
+    );
+    return;
+  }
+  showToast("当前浏览器不支持剪贴板");
+}
+
+function topbar(page: Page, d: Data | null): HTMLElement {
+  const menu = el("button", { class: "icon-btn menu-btn", type: "button", "aria-label": "打开导航" }, icon("menu", 15));
+  menu.addEventListener("click", () => document.querySelector(".app")?.classList.toggle("nav-open"));
+  const cmd = el("button", { class: "cmd-btn", type: "button", "aria-label": "搜索与跳转" },
+    icon("search", 14), el("span", { class: "label" }, "搜索页面、成员、项目、Agent…"), el("span", { class: "kbd" }, "Ctrl K"));
+  cmd.addEventListener("click", openPalette);
+  const refresh = el("button", { class: "icon-btn", type: "button", "aria-label": "刷新", title: "刷新" }, icon("refresh", 15));
+  refresh.addEventListener("click", () => { void boot(true); });
+  const dark = currentTheme() === "dark";
+  const themeBtn = el("button", { class: "icon-btn", type: "button", "aria-label": dark ? "切换到浅色" : "切换到深色", title: dark ? "切换到浅色" : "切换到深色" }, icon(dark ? "sun" : "moon", 15));
+  themeBtn.addEventListener("click", () => applyTheme(dark ? "light" : "dark"));
+  const copy = el("button", { class: "icon-btn", type: "button", "aria-label": "复制本页链接", title: "复制本页链接" }, icon("copy", 15));
+  copy.addEventListener("click", copyLink);
+  const i = d ? d.issues : null;
+  const pill = el("span", { class: "status-pill " + (i ? healthState(i) : "warn") },
+    el("span", { class: i ? statusDot(i) : "dot" }), i ? statusText(i) : "读取中");
+  const live = d && d.board ? el("span", { class: "live-chip" }, el("i"), "LIVE") : "";
+  return el("header", { class: "topbar" },
+    menu,
+    el("div", { class: "crumbs" },
+      el("span", { class: "grp" }, page.group),
+      el("span", { class: "sep" }, "/"),
+      el("b", {}, page.label)),
+    cmd,
+    el("div", { class: "top-actions" },
+      live,
+      pill,
+      d?.board ? el("span", { class: "meta-pill" }, "生成 " + localTime(d.board.generated_at)) : "",
+      themeBtn, refresh, copy));
+}
+
+function pageHead(page: Page): HTMLElement {
+  const copy = el("button", { class: "ghost-btn", type: "button" }, icon("copy", 14), "复制链接");
+  copy.addEventListener("click", copyLink);
+  const idx = PAGES.findIndex((x) => x.id === page.id) + 1;
+  const no = String(Math.max(idx, 1)).padStart(2, "0");
+  return el("section", { class: "page-head" },
+    el("div", { class: "ph-main" },
+      el("p", { class: "eyebrow" },
+        el("span", { class: "ph-no" }, no), page.group, el("span", { class: "ph-sep" }, "/"), el("span", {}, page.id)),
+      el("h1", {}, page.label),
+      el("p", { class: "ask" }, page.question),
+      page.sub ? el("p", { class: "ph-sub" }, page.sub) : ""),
+    el("div", { class: "page-actions" },
+      page.id === "overview" ? "" : el("a", { class: "ghost-btn", href: "#/overview" }, icon("overview", 14), "总览"),
+      copy));
+}
+
+function pageFooter(): HTMLElement {
+  return el("footer", { class: "note" },
+    el("strong", {}, "几乎只读"), "：数据是真相源（vault）的实时投影，点刷新重取；全站唯一能写的一处是「待批」页的点头，",
+    "它只留痕（timeline + audit），不动真相源。",
+    el("br"),
+    el("strong", {}, "校验发现"), " 与 ", el("span", { class: "mono" }, "anc org check"), " 同源；完整清单在「总览」和「审计」。");
+}
+
+function loadingBlock(): HTMLElement {
+  return el("div", { class: "glass pad" },
+    el("div", { class: "loading", style: "font-size:12.5px;margin-bottom:14px" }, "正在读取真相源…"),
+    el("div", { class: "sk", style: "width:58%" }),
+    el("div", { class: "sk", style: "width:82%" }),
+    el("div", { class: "sk", style: "width:44%" }));
+}
+
+// 一页的渲染出错，只该让这一页报错，不该把整个外壳留在「读取中」。
+// 报出来的是页面 id 和原始错误 —— 不猜原因，也不把异常吞掉。
+function pageCrash(page: Page, err: unknown): HTMLElement {
+  const msg = err instanceof Error ? err.message : String(err);
+  return banner("bad", "这一页渲染失败", [
+    el("span", { class: "mono" }, page.id),
+    el("br"),
+    el("span", {}, msg),
+    el("br"),
+    el("span", { class: "quiet" }, "其余页面不受影响；刷新可重取一次数据。"),
+  ]);
+}
+
+function shell(): void {
+  if (!root) return;
+  const page = pageFor(currentId());
+  const d = cache;
+  const entering = d !== null && page.id !== lastShellPage;
+  stopField();
+  stopOrgGraph();
+  if (drawerLayer?.dataset.open === "1") closeDrawer();
+  if (paletteLayer?.dataset.open === "1") closePalette();
+
+  const col = el("div", { class: "col" });
+  col.append(pageHead(page));
+  if (!d) {
+    col.append(loadingBlock());
+  } else {
+    try {
+      for (const kid of page.view(d)) col.append(kid);
+    } catch (err) {
+      col.append(pageCrash(page, err));
+    }
+    col.append(pageFooter());
+    lastShellPage = page.id;
+  }
+  if (entering) {
+    Array.from(col.querySelectorAll("section")).forEach((sec, i) => {
+      if (sec.classList.contains("page-head")) return;
+      sec.classList.add("reveal");
+      (sec as HTMLElement).style.animationDelay = String(Math.min(i, 6) * 0.055) + "s";
+    });
+    // 卡片再晚半拍落位：一层是页面分区，一层是分区里的实体。
+    Array.from(col.querySelectorAll(".entity-card")).forEach((n, i) => {
+      n.classList.add("rise");
+      (n as HTMLElement).style.animationDelay = String(0.06 + Math.min(i, 10) * 0.045) + "s";
+    });
+  }
+  document.title = page.label + " · " + (d?.board ? dash(d.board.company.name) : "ANC 看板");
+
+  const app = el("div", { class: "app" },
+    sidebar(page, d),
+    el("div", { class: "side-scrim" }),
+    el("div", { class: "main" },
+      topbar(page, d),
+      el("main", { class: "pagewrap" }, el("div", { class: "page page-" + page.id }, col)),
+      el("footer", { class: "statusbar" },
+        el("span", { class: "sb-item" }, el("i", { class: "sb-dot" }), d?.board ? dash(d.board.company.name) : "ANC 看板"),
+        el("span", { class: "sb-item" }, "schema ", el("b", {}, d?.board ? d.board.schema : "—")),
+        el("span", { class: "sb-item" }, d?.board ? "生成 " + localTime(d.board.generated_at) : "等待投影"),
+        el("span", { class: "sb-grow" }),
+        el("span", { class: "sb-item" }, "几乎只读 · 唯一写口在待批"),
+        el("span", { class: "sb-item" }, "Ctrl K"))));
+  try {
+    if (localStorage.getItem("anc.rail.min") === "1") app.classList.add("rail-min");
+  } catch { /* 隐私模式不读 */ }
+
+  drawerEyebrow = el("div", { class: "eyebrow" });
+  drawerTitle = el("h2");
+  drawerSub = el("div", { class: "dsub" });
+  drawerBody = el("div", { class: "drawer-body" });
+  const dClose = el("button", { class: "icon-btn", type: "button", "aria-label": "关闭详情" }, icon("close", 15));
+  dClose.addEventListener("click", closeDrawer);
+  drawerLayer = el("div", { class: "drawer-layer", "data-open": "0" },
+    el("div", { class: "drawer-scrim" }),
+    el("aside", { class: "drawer" },
+      el("header", {},
+        el("div", { class: "dh" }, drawerEyebrow, drawerTitle, drawerSub),
+        dClose),
+      drawerBody));
+  drawerLayer.querySelector(".drawer-scrim")?.addEventListener("click", closeDrawer);
+
+  paletteInput = el("input", { type: "text", placeholder: "跳转到页面、业务域、项目、成员、bot…", "aria-label": "搜索" }) as HTMLInputElement;
+  paletteList = el("div", { class: "palette-list" });
+  paletteLayer = el("div", { class: "palette-layer", "data-open": "0" },
+    el("div", { class: "palette" },
+      paletteInput, paletteList,
+      el("div", { class: "palette-foot" },
+        el("span", {}, "↑↓ 选择"), el("span", {}, "Enter 打开"), el("span", {}, "Esc 关闭"))));
+  paletteLayer.addEventListener("click", (e) => { if (e.target === paletteLayer) closePalette(); });
+  paletteInput.addEventListener("input", () => renderPalette(paletteInput?.value ?? ""));
+  paletteInput.addEventListener("keydown", (e) => paletteKey(e as KeyboardEvent));
+
+  app.append(drawerLayer, paletteLayer);
+  root.replaceChildren(app);
+  app.querySelector(".side-scrim")?.addEventListener("click", () => app.classList.remove("nav-open"));
+
+  if (page.id === "overview" && d !== null) {
+    requestAnimationFrame(() => mountField(col, d));
+  }
+  if (page.id === "graph" && d !== null) {
+    requestAnimationFrame(() => mountOrgGraph(col, d));
+  }
+}
 
 void boot();

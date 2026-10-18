@@ -26,7 +26,7 @@ const (
 	SlotSubmitter      = "submitter"       // 谁提的：人话一句（名字 + 类别 + 挂在哪块业务）
 	SlotSubmitterOwner = "submitter_owner" // 这个主体**属于谁**（业务 agent 才答得出来）
 	SlotSubmitterKind  = "submitter_kind"  // member / agent / 认不出
-	SlotApprover       = "approver"        // 该谁批：岗位（人名）—— 真人是现算的
+	SlotApprover       = "approver"        // 该谁批：人名（岗位）—— 真人是现算的
 )
 
 // Facts 是这一张卡片此刻的值。o 可以是 nil（真相源没加载上）—— 那时身份那几格如实说不知道，

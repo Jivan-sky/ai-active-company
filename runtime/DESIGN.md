@@ -933,7 +933,7 @@ frontmatter 就报（第二段压根不会被读，不报 = 那条授权静默�
 反过来，想让「授权必带期限」的口径回来，写 `grant.ttl.missing = warn`（或 `fatal`）—— 规则是数据，不是删掉。
 `anc org check` 另外加了一行 `授权 N 条` —— 「先看见」得先看得见。
 
-**看板投影全量、bot 侧零条**：投影（`anc.board/v1`）带 `grants`，十条字段原样搬、不筛选不脱敏；
+**看板投影全量、bot 侧零条**：投影（`anc.board/v2`）带 `grants`，十条字段原样搬、不筛选不脱敏；
 bot 侧那个「只出与我相关的几条」的视图**还没做**。两个消费者、两个视图，**不共用一份产物** ——
 共用迟早把看板的全量漏给 bot。
 
@@ -1283,7 +1283,7 @@ demo 会话的 27 次行使里，11 条落在「vault 内非域」、11 条落�
 | 验的 | 怎么验 | 结果 |
 |---|---|---|
 | 两个工具都在 | `tools/list` | `anc_send_envelope` + `anc_read_context` |
-| **一次调用答出四问** | `who=alice` | `what=把做过的活沉成可复用的资产` · `data=10-knowledge` · `who=经理（Alice、Bob）` · `evidence={domains.md,5}`；另附别域目录（`ops`，**没有 data**） |
+| **一次调用答出四问** | `who=alice` | `what=把做过的活沉成可复用的资产` · `data=10-knowledge` · `who=Alice、Bob（经理）` · `evidence={domains.md,5}`；另附别域目录（`ops`，**没有 data**） |
 | 跨域被拒 + 指路 | `who=alice, domain=ops` | `isError=true`；`refused.ask=开发运维（Devbot）`；回话里没有 `20-ops` |
 | 拒的应答不带 `domains` 键 | 同上 | 契约形状干净（不是 `"domains":null`） |
 | 无身份 = 这个人不存在 | `who=hacker` | 「我们公司没有这个人」—— 整段没有「参数 / 格式 / schema」字样 |
@@ -1365,7 +1365,7 @@ SPEC §4.7 ① 说「换一个网关是加一张表 + 一个适配器」，但 2
 | 字段 | 内容 | 真相源 |
 |---|---|---|
 | `skills[]` | `{name, where, missing}` —— 技能从哪来 | 清单 = `roles/<role>/persona.md` 的 `skills:`；正文 = `skills/<name>/SKILL.md`（`where` 是 **vault 相对**指针） |
-| `projects[]` | `{slug, name, owner, period, source, evidence}` —— 在跟哪个项目（**第六问**） | `projects.md`；`owner` 走与域行同一个 `WhoLabel`（岗位 → 人名）；`evidence` 指回行号 |
+| `projects[]` | `{slug, name, owner, period, source, evidence}` —— 在跟哪个项目（**第六问**） | `projects.md`；`owner` 走与域行同一个 `WhoLabel`（岗位 → 「人名（岗位）」）；`evidence` 指回行号 |
 | `gaps[]` | 这份上下文**答不了什么**（报缺，不编） | — |
 
 **报缺的口径**（`gaps` 只在要「全部」时给 —— 单独要一域的人不该被一段通用说明淹掉）：
@@ -2196,7 +2196,7 @@ bot 读了 `~/.claude/settings.json`，当时在用的 `ANTHROPIC_AUTH_TOKEN` �
 |---|---|
 | `--open-id ou_demo_alice` | ✅ 人 alice（Alice Wang）· 岗位 manager · 域 trade · 这台 demo-alice |
 | `--app-id cli_demo_bob` | ✅ 人 bob（Bob Li）· 岗位 ops · 域 logistics |
-| `--app-id cli_demo_tradebot` | ✅ 业务 agent tradebot · 铭文「替 manager 岗盯进出口合同的签订与执行」· **属于 alice**（凭什么：域 trade 的 who 岗位 manager —— 经理（Alice Wang）） |
+| `--app-id cli_demo_tradebot` | ✅ 业务 agent tradebot · 铭文「替 manager 岗盯进出口合同的签订与执行」· **属于 alice**（凭什么：域 trade 的 who 岗位 manager —— Alice Wang（经理）） |
 | `--app-id cli_demo_ghostbot`（domain 写成不存在的域） | ✅ **解不出归属**，并说明「域 nope 不在 domains.md 里」 |
 | `--open-id ou_stranger` | ✅ **解不出**，并说明「在 members/ 里没人认领 —— 自报的身份不算」 |
 | `--project demo-alice` / 裸 `alice` | ✅ 同上；`other-alice` 解不出（前缀要对齐本公司 id） |
@@ -2295,9 +2295,9 @@ prompt 或一条命令，`payload` 会作为上下文拼进 prompt）。它就�
 | 坏帧：写错槽位 + `kind: 表格` + 按键没写 `signal` | ✅ 三条 Note 各自指到哪一块；那一格写「（没这个值：没这个键）」；认不出的块与没信号的按键**不渲染**（不猜） |
 | 帧版本不对（`anc.card/v9`） | ✅ 拒绝并说明只认 `anc.card/v1` |
 | `card --json` | ✅ 真 interactive 卡片 JSON（`config` / `header.template=red` / `markdown` + `div.fields` + `action.actions`）；按钮 `value` 里是 `anc_id` + `anc_signal` |
-| 业务 agent 提的（`tradebot`） | ✅ 「谁提的：贸易助手（业务 agent · trade）：替 manager 岗盯进出口合同的签订与执行」；**「属于谁：alice（域 trade 的 who 岗位 manager —— 经理（Alice Wang））」** |
+| 业务 agent 提的（`tradebot`） | ✅ 「谁提的：贸易助手（业务 agent · trade）：替 manager 岗盯进出口合同的签订与执行」；**「属于谁：alice（域 trade 的 who 岗位 manager —— Alice Wang（经理））」** |
 | 成员提的（`devbot`） | ✅ 「属于谁：成员没有归属人 —— 他属于他自己」 |
-| 该谁批 | ✅ `manager · 经理（Alice Wang）`（队列里存的是岗位，人名现算） |
+| 该谁批 | ✅ `manager · Alice Wang（经理）`（队列里存的是岗位，人名现算） |
 | 颜色 | ✅ `red`，并写明「从状态 pending 现算」 |
 | 回程：`anc_signal: yes` | ✅ 拒（`exit 1`），队列没动 |
 | 回程：没带 `anc_id` | ✅ 拒：「两个键都在才算数，缺一个也不猜」 |
@@ -3054,7 +3054,7 @@ A2A 的任务状态机把 `input-required` / `auth-required` 当**一等中断�
 
 **四条口径**（都写进注释了）：
 
-1. **全量、不筛选、不脱敏** —— 与 `anc.board/v1` 的 `grants` 同一纪律（看板是观测面，不是凭据面）。
+1. **全量、不筛选、不脱敏** —— 与 `anc.board/v2` 的 `grants` 同一纪律（看板是观测面，不是凭据面）。
    授权表本来就**没有凭据**（SPEC §6：它记的是「谁被允许做什么」），所以这一页不出
    `app_id` / `app_secret`。「脱敏」在这里**无事可做** —— 不是漏做，是表里没有可脱的东西。
 2. **视角只筛、不改写**：`?who=<编号身份>` 只露与它相关的行；`total` 仍是全表数。

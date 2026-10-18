@@ -21,7 +21,7 @@ func TestVisibleDomainsScoping(t *testing.T) {
 		t.Errorf("自己的域要带上「数据在哪」，实际 %q", mine[0].Data)
 	}
 	if !strings.Contains(mine[0].Who, "Alice Wang") {
-		t.Errorf("Who 要是派生的「岗位（人名）」，实际 %q", mine[0].Who)
+		t.Errorf("Who 要是派生的「人名（岗位）」，实际 %q", mine[0].Who)
 	}
 	if mine[0].Line == 0 {
 		t.Error("行号要留着 —— 出站读出口拿它当证据指针")

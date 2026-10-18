@@ -17,9 +17,9 @@ import (
 
 // Schema 是这个视图的版本。**有消费方之后**，字段增删一律改它 —— 消费方据此判断能不能吃。
 //
-// 现在还没有消费方（前端壳未开工），所以 v1 期间补齐了 projects / charter 两个字段；
-// 等前端吃上 v1，再动字段就必须升 v2 —— 换句话说，这条纪律从现在开始生效。
-const Schema = "anc.board/v1"
+// v1 期间补齐了 projects / charter；v2 加了 agents（业务 agent 观测视图）。
+// 前端已经吃上 v2，再动字段就必须继续升版本号。
+const Schema = "anc.board/v2"
 
 // View 是看板的全部输入。字段**恒在**（不做 omitempty）：schema 稳定比省几个字节值钱。
 //
@@ -34,6 +34,7 @@ type View struct {
 	Members   []Member  `json:"members"`
 	Domains   []Domain  `json:"domains"`
 	Projects  []Project `json:"projects"`
+	Agents    []Agent   `json:"agents"`
 	Grants    []Grant   `json:"grants"`
 	Routing   []Routing `json:"routing"`
 }
@@ -68,7 +69,7 @@ type Member struct {
 	Domains     []string `json:"domains"`
 }
 
-// Domain 是域表一行。Who 是岗位，WhoLabel 是渲染时派生的「岗位（人名）」。
+// Domain 是域表一行。Who 是岗位，WhoLabel 是渲染时派生的「人名（岗位）」。
 type Domain struct {
 	Slug     string `json:"slug"`
 	Name     string `json:"name"`
@@ -86,7 +87,7 @@ type Routing struct {
 	Summary string `json:"summary"`
 }
 
-// Project 是项目表一行。Owner 是岗位，OwnerLabel 是派生的「岗位（人名）」。
+// Project 是项目表一行。Owner 是岗位，OwnerLabel 是派生的「人名（岗位）」。
 // Period 是**原文照搬**的自由文本 —— ANC 不解读周期，只把它显示出来。
 // Charter 是立项书**副本**在 vault 里的相对路径；空 = 还没有副本（真源在客户侧，缺了不算错）。
 type Project struct {
@@ -98,6 +99,24 @@ type Project struct {
 	Period     string `json:"period"`
 	Source     string `json:"source"`
 	Charter    string `json:"charter"`
+}
+
+// Agent 是**业务 agent**（agents.md 一行）的观测视图。
+//
+// 与 Member 分开：成员 bot 代人，业务 agent 代岗位 / 流程。看板要回答
+// 「这个 agent 替谁、挂哪块业务、在不在线」，而不是把两类单位混成一张表。
+//
+// 只出「接没接平台」（wired），不出 app_id —— 看板是观测面，不是凭据面。
+type Agent struct {
+	Slug        string   `json:"slug"`
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Domain      string   `json:"domain"`
+	Role        string   `json:"role"`
+	Harness     string   `json:"harness"`
+	Model       string   `json:"model"`
+	Tools       []string `json:"tools"`
+	Wired       bool     `json:"wired"`
 }
 
 // Grant 是授权表一条。**恒在、不 omitempty**：零条授权也要出一个 `[]`，前端少一个判空。
@@ -135,6 +154,7 @@ func Of(o *org.Org, now time.Time) *View {
 		Members:  []Member{},
 		Domains:  []Domain{},
 		Projects: []Project{},
+		Agents:   []Agent{},
 		Grants:   []Grant{},
 		Routing:  []Routing{},
 	}
@@ -172,6 +192,15 @@ func Of(o *org.Org, now time.Time) *View {
 			Slug: pr.Slug, Name: pr.Name, Domain: pr.Domain,
 			Owner: pr.Owner, OwnerLabel: o.WhoLabel(pr.Owner),
 			Period: pr.Period, Source: pr.Source, Charter: charter,
+		})
+	}
+	for _, a := range o.Agents {
+		v.Agents = append(v.Agents, Agent{
+			Slug: a.Slug, Name: a.Name, Description: a.Description,
+			Domain: a.Domain, Role: a.Role,
+			Harness: a.Harness, Model: a.Model,
+			Tools: strList(org.SplitList(a.Tools)),
+			Wired: a.AppID != "",
 		})
 	}
 	for _, g := range o.Grants {

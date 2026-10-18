@@ -110,7 +110,7 @@ func readOnly(next http.Handler) http.Handler {
 	})
 }
 
-// handleBoard 出 `anc.board/v1` 投影。
+// handleBoard 出 `anc.board/v2` 投影。
 //
 // 加载不了（红档）就不给视图：**投影契约只在成功时出现** —— 消费方拿到的每一份 JSON
 // 都必然是完整可吃的，不必先判断「这份是不是半成品」。哪里错了看 /api/issues。
@@ -146,7 +146,7 @@ type Finding struct {
 
 // Issues 是 `/api/issues` 的形状。
 //
-// 刻意**不**并进 `anc.board/v1`：那是「真相源投影」的契约，这个是「真相源健康度」——
+// 刻意**不**并进 `anc.board/v2`：那是「真相源投影」的契约，这个是「真相源健康度」——
 // 来源不同、变化节奏也不同（评审与修复会天天动它）。
 type Issues struct {
 	OK    bool      `json:"ok"`

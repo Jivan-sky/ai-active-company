@@ -144,8 +144,8 @@ func TestDomainSegmentScoping(t *testing.T) {
 		t.Fatalf("自己的域没给全列：\n%s", txt)
 	}
 	// who 填的是岗位，渲染时才解成人名 —— 名单只有一份，不会漂移
-	if !strings.Contains(txt, "经理（Alice Wang）") {
-		t.Fatalf("who 没派生成「岗位（人名）」：\n%s", txt)
+	if !strings.Contains(txt, "Alice Wang（经理）") {
+		t.Fatalf("who 没派生成「人名（岗位）」：\n%s", txt)
 	}
 	// 别人的域：只在目录里，且它的术语不许进 alice 的上下文
 	if !strings.Contains(txt, "| logistics | 物流 |") {

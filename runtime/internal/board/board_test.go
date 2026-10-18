@@ -66,7 +66,7 @@ func TestViewDerivesWhoLabel(t *testing.T) {
 	if len(v.Domains) != 2 {
 		t.Fatalf("期望 2 个域，实际 %d", len(v.Domains))
 	}
-	if v.Domains[0].Who != "manager" || v.Domains[0].WhoLabel != "经理（Alice Wang）" {
+	if v.Domains[0].Who != "manager" || v.Domains[0].WhoLabel != "Alice Wang（经理）" {
 		t.Fatalf("who / who_label 不对：%+v", v.Domains[0])
 	}
 }
@@ -92,7 +92,7 @@ func TestViewProjectsProjected(t *testing.T) {
 	if pr.Slug != "trade-q3" || pr.Name != "Q3 结算改造" || pr.Domain != "trade" {
 		t.Fatalf("项目字段投影不对：%+v", pr)
 	}
-	if pr.Owner != "manager" || pr.OwnerLabel != "经理（Alice Wang）" {
+	if pr.Owner != "manager" || pr.OwnerLabel != "Alice Wang（经理）" {
 		t.Fatalf("owner / owner_label 不对：%+v", pr)
 	}
 	if pr.Period != "2026-07-01 → 2026-09-30" {
