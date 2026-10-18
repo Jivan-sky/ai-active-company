@@ -59,6 +59,16 @@ Copy-Item -Recurse -Force .\skill\anc-distill,.\skill\anc-distill-targets,.\skil
 
 macOS / Linux 用对应的 `cp -r`。装到哪个根目录由宿主决定，本仓库不假设。
 
+## 与客户 vault 的 `skills/` 不是同一层
+
+| | 本目录 `skill/` | 客户 vault 的 `skills/<name>/SKILL.md` |
+|---|---|---|
+| 是什么 | **产品能力库**：ANC 自带的方法件，给 FDE 与任意 harness 装 | **客户真相源**：这家公司自己长出来的 skill |
+| 真相源 | 本仓库 `SPEC.md`（本目录只是派生视图） | 客户 vault 的 git |
+| 分发 | 复制到 harness 的 skills 根目录（见上） | 由 `render` 按角色分发（SPEC §3.4：Skill N—N Role，个人可另加载） |
+
+两层都叫 skill，但**授权与生命周期各归各的**：产品能力库升级走本仓库；客户 skill 的增长走客户 vault 的 git 与 eval 回归。**别把产品能力直接写进客户 vault，也别把客户 skill 反向塞回本目录。**
+
 ## 机制溯源
 
 这三件是**读完公开素材后重写**的，没有复制原文段落。借用的机制与出处：
