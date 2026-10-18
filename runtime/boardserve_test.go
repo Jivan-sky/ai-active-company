@@ -24,6 +24,11 @@ func TestBoardServeArgs(t *testing.T) {
 			filepath.Join("testdata", "orgs", "domains"),
 			"--ui-dir", filepath.Join(t.TempDir(), "没有这个目录"),
 		}, 1},
+		// 非回环地址不给 --insecure-bind：先 bind 到临时端口，再拒绝启动（端口随即关掉）。
+		{"非回环没给 insecure-bind", []string{
+			filepath.Join("testdata", "orgs", "domains"),
+			"--addr", "0.0.0.0:0",
+		}, 1},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

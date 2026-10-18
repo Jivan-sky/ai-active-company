@@ -37,6 +37,21 @@ func TestEnvelopeCLIAnswersSix(t *testing.T) {
 	}
 }
 
+// 接入面同一条绑定边界：非回环不给 --insecure-bind 就拒绝启动。
+// data 指到临时目录，避免往 testdata 里落东西。
+func TestEnvelopeServeRefusesNonLoopback(t *testing.T) {
+	code := quiet(t, func() int {
+		return cmdEnvelopeServe([]string{
+			filepath.Join("testdata", "orgs", "domains"),
+			"--data", t.TempDir(),
+			"--addr", "0.0.0.0:0",
+		})
+	})
+	if code != 1 {
+		t.Fatalf("退出码 %d，期望 1", code)
+	}
+}
+
 // 缺 who = 读不懂 = 拒收（退出码 1），不是「一条 warn 然后放行」。
 func TestEnvelopeCLIRejectsIncomplete(t *testing.T) {
 	vault := copyFixture(t, "domains")

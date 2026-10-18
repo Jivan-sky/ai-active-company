@@ -189,6 +189,7 @@ const envelopeServeUsage = `anc envelope serve —— 起 ANC 的接入面（MCP
   anc envelope serve <vault 目录> [--addr 127.0.0.1:8791] [--data <data 目录>]
                                      [--hot-addr 127.0.0.1:6379] [--hot-prefix anc]
                                      [--agent-stale 2m] [--task-lease 10m]
+                                     [--insecure-bind]
 
 harness（Claude Code / Codex / …）通过 MCP 调工具。桥的两半都在这一个入口上：
 
@@ -224,7 +225,8 @@ harness（Claude Code / Codex / …）通过 MCP 调工具。桥的两半都在�
 
 无状态：不发 Mcp-Session-Id、不记会话、不提供 SSE 流 —— 状态在真相源与日志里，不在连接里。
 
-安全口径：默认只绑本机（127.0.0.1）。要给别人用请走 ssh 端口转发，别把 0.0.0.0 开出去。
+安全口径：默认只绑本机（127.0.0.1）。要给别人用请走 ssh 端口转发；确实要绑非回环地址时
+必须显式加 --insecure-bind，否则拒绝启动。
 
 退出：Ctrl-C。
 `
@@ -1082,12 +1084,13 @@ func clipRunes(s string, n int) string {
 func cmdEnvelopeServe(args []string) int {
 	fs := flag.NewFlagSet("envelope serve", flag.ContinueOnError)
 	addr := fs.String("addr", "127.0.0.1:8791", "监听地址")
+	insecureBind := fs.Bool("insecure-bind", false, "允许绑到非回环地址（默认拒绝；要给别人用请走 ssh 端口转发）")
 	data := fs.String("data", "", "运行态 data 目录（信封日志落这儿）")
 	hotAddr := fs.String("hot-addr", "", "热层地址（读出口的「派给我的待办」用它；默认 "+hot.DefaultAddr+"；也可用 ANC_HOT_ADDR）")
 	hotPrefix := fs.String("hot-prefix", "", "热层 key 前缀（默认 "+hot.DefaultPrefix+"；也可用 ANC_HOT_PREFIX）")
 	agentStale := fs.Duration("agent-stale", 0, "多久没心跳不算在线（默认 "+hot.DefaultAgentStale.String()+"；也可用 ANC_AGENT_STALE）")
 	taskLease := fs.Duration("task-lease", 0, "pull 之后的认领租约（默认 "+hot.DefaultTaskLease.String()+"；也可用 ANC_TASK_LEASE）")
-	flagArgs, posArgs := splitArgs(args, map[string]bool{})
+	flagArgs, posArgs := splitArgs(args, map[string]bool{"insecure-bind": true})
 	if err := fs.Parse(flagArgs); err != nil {
 		return 2
 	}
@@ -1120,16 +1123,19 @@ func cmdEnvelopeServe(args []string) int {
 		fmt.Fprintf(os.Stderr, "错误：监听 %s 失败：%v\n", *addr, err)
 		return 1
 	}
+	if ok, why := checkBindAddr(ln.Addr(), *insecureBind); !ok {
+		_ = ln.Close()
+		fmt.Fprintf(os.Stderr, "错误：%s\n", why)
+		return 1
+	} else if why != "" {
+		fmt.Fprintf(os.Stderr, "⚠️  %s\n", why)
+	}
 	defer func() { _ = ln.Close() }()
 
 	urlHost := ln.Addr().String()
 	if tcp, ok := ln.Addr().(*net.TCPAddr); ok {
 		if tcp.IP.IsUnspecified() {
 			urlHost = net.JoinHostPort("127.0.0.1", strconv.Itoa(tcp.Port))
-		}
-		if !tcp.IP.IsLoopback() {
-			fmt.Fprintf(os.Stderr,
-				"⚠️  绑到了 %s：接入面只该给本机（或经 ssh 端口转发的人）用。\n", ln.Addr())
 		}
 	}
 

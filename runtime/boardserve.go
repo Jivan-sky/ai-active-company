@@ -26,13 +26,16 @@ const boardServeUsage = `anc board serve —— 起 ANC 看板（读为主；写
                                  [--hot-addr 127.0.0.1:6379] [--hot-prefix anc]
                                  [--agent-stale 2m]
                                  [--ui-dir <前端目录>]
+                                 [--insecure-bind]
 
 看板读的是真相源（vault）的**实时投影**：改完 vault 刷新即见，不缓存。
 前端（手写的 html + 构建期打出的 js）默认已经嵌在这个二进制里 —— 不需要 node、不需要外网。
 现场要换一份前端（改样式、补一页、拿真机产物核界面）用 --ui-dir 指过去，不必重编译。
 
 选项：
-  --addr <host:port>   监听地址（默认只绑本机 127.0.0.1；绑到别处会打警告）
+  --addr <host:port>   监听地址（默认只绑本机 127.0.0.1）
+  --insecure-bind      允许绑到非回环地址。不给就拒绝启动 —— 要给别人看请走 ssh 端口转发；
+                       确实要直接对外时才加这一项，自行承担暴露风险。
   --data <目录>        gateway 的 data 目录（默认 <vault>/../data）—— 给了它，「运行态」
                        页才接得上；默认口径同 anc probe 命令，两边看的是同一份现场。
   --hot-addr <地址>    热层地址（「待批」页用）；默认 127.0.0.1:6379，也可用 ANC_HOT_ADDR。
@@ -50,8 +53,8 @@ const boardServeUsage = `anc board serve —— 起 ANC 看板（读为主；写
   - 两条写口都只收 POST + application/json（跨站表单发不出这个 Content-Type，浏览器会先发预检，
     而我们不回 CORS 头 —— 所以没有 token 也挡得住「别的网页替你点头」）；请求体限 64KB。
   - **不校「点的人是不是该批的人」**：请求里带的 by 原样留痕，判断交给 agent（归档同口径）。
-  - 默认只绑本机 —— 看板里有组织与项目信息，要给别人看请走 ssh 端口转发，
-    别把 0.0.0.0 直接开出去；
+  - 默认只绑本机 —— 看板里有组织与项目信息，要给别人看请走 ssh 端口转发；
+    绑到非回环地址必须显式加 --insecure-bind，否则拒绝启动；
   - 投影里不含凭据面字段（feishu app_id / open_id 等一律不进）。
 
 退出：Ctrl-C。
@@ -63,12 +66,13 @@ const boardServeUsage = `anc board serve —— 起 ANC 看板（读为主；写
 func cmdBoardServe(args []string) int {
 	fs := flag.NewFlagSet("board serve", flag.ContinueOnError)
 	addr := fs.String("addr", "127.0.0.1:8787", "监听地址")
+	insecureBind := fs.Bool("insecure-bind", false, "允许绑到非回环地址（默认拒绝；要给别人看请走 ssh 端口转发）")
 	data := fs.String("data", "", "gateway data 目录（运行态页用）")
 	hotAddr := fs.String("hot-addr", "", "热层地址（待批页用；默认 "+hot.DefaultAddr+"；也可用 ANC_HOT_ADDR）")
 	hotPrefix := fs.String("hot-prefix", "", "热层 key 前缀（默认 "+hot.DefaultPrefix+"；也可用 ANC_HOT_PREFIX）")
 	agentStale := fs.Duration("agent-stale", 0, "多久没心跳不算在线（默认 "+hot.DefaultAgentStale.String()+"；也可用 ANC_AGENT_STALE）")
 	uiDir := fs.String("ui-dir", "", "前端静态资源目录（默认用内嵌的那份）")
-	flagArgs, posArgs := splitArgs(args, map[string]bool{})
+	flagArgs, posArgs := splitArgs(args, map[string]bool{"insecure-bind": true})
 	if err := fs.Parse(flagArgs); err != nil {
 		return 2
 	}
@@ -119,6 +123,13 @@ func cmdBoardServe(args []string) int {
 		fmt.Fprintf(os.Stderr, "错误：监听 %s 失败：%v\n", *addr, err)
 		return 1
 	}
+	if ok, why := checkBindAddr(ln.Addr(), *insecureBind); !ok {
+		_ = ln.Close()
+		fmt.Fprintf(os.Stderr, "错误：%s\n", why)
+		return 1
+	} else if why != "" {
+		fmt.Fprintf(os.Stderr, "⚠️  %s\n", why)
+	}
 	defer func() { _ = ln.Close() }()
 
 	if o, err := org.Load(abs); err == nil {
@@ -131,10 +142,6 @@ func cmdBoardServe(args []string) int {
 	if tcp, ok := ln.Addr().(*net.TCPAddr); ok {
 		if tcp.IP.IsUnspecified() {
 			urlHost = net.JoinHostPort("127.0.0.1", strconv.Itoa(tcp.Port))
-		}
-		if !tcp.IP.IsLoopback() {
-			fmt.Fprintf(os.Stderr,
-				"⚠️  绑到了 %s：看板里有组织与项目信息，只该给本机、或经 ssh 端口转发的人看。\n", ln.Addr())
 		}
 	}
 

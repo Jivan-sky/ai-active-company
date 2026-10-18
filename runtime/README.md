@@ -316,13 +316,14 @@ anc ingest --dump-shape            出厂提案形状（数据）；不需要 va
 
 ```
 anc board serve <vault> [--addr 127.0.0.1:8787] [--data <data 目录>] [--hot-addr 127.0.0.1:6379]
-                        [--ui-dir <前端目录>]
+                        [--ui-dir <前端目录>] [--insecure-bind]
 ```
 
 一个**几乎只读**的本地看板（写只有两处：「待批」页的点头、热层终态条目的归档，见下）。**分页，不挤一页** —— 一页只回答一个问题，那句问题就写在页头：
 
 前端**默认**用嵌在二进制里的那份（一个 exe 就起来）；`--ui-dir` 指到磁盘上的一份就**覆盖**它。
 覆盖是替换不是叠加，且只换「前端文件从哪来」—— 路由、只读口径、端点一个都不动。目录写错直接退。
+默认只绑本机；绑到非回环地址必须显式加 `--insecure-bind`，否则拒绝启动（要给别人看请走 ssh 端口转发）。
 
 | 页 | 回答什么 | 读者 | 数据源 | 现状 |
 |---|---|---|---|---|
@@ -644,9 +645,11 @@ anc envelope check <vault> <信封.json> [--json]
 ```
 anc envelope serve <vault 目录> [--addr 127.0.0.1:8791] [--data <data 目录>]
                                  [--hot-addr 127.0.0.1:6379] [--hot-prefix anc]
+                                 [--insecure-bind]
 ```
 
 harness 通过 **MCP（streamable HTTP）** 调工具。**桥的两半挂在同一个入口上**：
+默认只绑本机；绑到非回环地址必须显式加 `--insecure-bind`，否则拒绝启动。
 
 ```
 anc_send_envelope(who, on_behalf_of?, kind?, body, scope_domain?, scope_project?, refs?, needs?)   # 递进来
