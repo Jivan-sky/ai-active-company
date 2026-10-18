@@ -60,6 +60,7 @@ var DefaultRules = []Rule{
 	{"company.devbot.count", LevelFatal, false, "SPEC §1：一个公司恰好一个启用中的 devbot"},
 	{"company.admins.unknown", LevelFatal, false, "admins 渲染进 admin_from，指向不存在的成员等于特权命令无人可发"},
 	{"company.admins.disabled", LevelWarn, false, "管理员已停用，admin_from 仍会渲染它；确认是有意保留"},
+	{"company.access.cross_domain.invalid", LevelFatal, false, "跨域可见性写错会静默改变「谁能看到什么」—— 权限口径不许猜；只认 visible / hidden，不写 = visible"},
 
 	// —— 成员层 ——
 	{"member.name.duplicate", LevelFatal, false, "同名成员会生成同名 project，gateway 只留一个"},

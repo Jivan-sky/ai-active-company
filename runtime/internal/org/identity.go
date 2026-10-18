@@ -104,19 +104,11 @@ func ProjectName(companyID, name string) string { return companyID + "-" + name 
 // ByOpenID 按平台身份找人。open_id 是本系统里唯一的「人」标识（见 Feishu 的注释）；
 // 业务 agent 不代表人、没有 open_id，所以这一条只可能落在成员上。
 func (o *Org) ByOpenID(openID string) (Identity, bool) {
-	if o == nil {
+	m, ok := o.memberByOpenID(openID)
+	if !ok {
 		return Identity{}, false
 	}
-	id := strings.TrimSpace(openID)
-	if id == "" {
-		return Identity{}, false
-	}
-	for _, m := range o.Members {
-		if strings.TrimSpace(m.Feishu.OpenID) == id {
-			return identityOfMember(m), true
-		}
-	}
-	return Identity{}, false
+	return identityOfMember(m), true
 }
 
 // ByAppID 按「消息发到哪个 app」找那台 bot：成员 bot 与业务 agent 二选一

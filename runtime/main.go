@@ -160,9 +160,13 @@ func main() {
 		if len(args) > 0 && args[0] == "who" {
 			os.Exit(cmdOrgWho(args[1:]))
 		}
+		if len(args) > 0 && args[0] == "access" {
+			os.Exit(cmdOrgAccess(args[1:]))
+		}
 		fmt.Fprint(os.Stderr, renderUsage)
 		fmt.Fprint(os.Stderr, boardUsage)
 		fmt.Fprint(os.Stderr, orgWhoUsage)
+		fmt.Fprint(os.Stderr, orgAccessUsage)
 		os.Exit(2)
 	case "board":
 		if len(args) > 0 && args[0] == "serve" {

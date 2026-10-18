@@ -251,6 +251,23 @@ anc org who <vault> [--open-id <ou_…>] [--app-id <cli_…>] [--project <名>] 
 - **它不做判断**：谁能批、谁不能批是授权层的事 —— 这条命令一个 if 都不加。
   设计记录见 `DESIGN.md` §7.1.38。
 
+### 进门判定（`anc org access`）
+
+```
+anc org access <vault> --open-id <ou_…> [--domain <slug>] [--json]
+```
+
+回答「这个 `open_id` 在这家公司里是谁、能看哪些域」。**白名单制**：对不上
+`members/*/feishu.open_id` 一律拒绝，`disabled` 的成员同样拒绝 —— 没有游客档。
+
+- **拒绝是判定结果，不是命令失败**：退出码仍是 0，脚本读 `--json` 的 `allowed`。
+- **管理员两条路都认**：`company.md` 的 `admins`，或该成员写 `admin: true`。
+  两处都认，是为了「随时把某人提成最高权限」既能在公司层集中做，也能在人身上单独做。
+- **跨域可见性是客户口径**：`company.md` 的 `access.cross_domain`，`hidden` = 只看自己域，
+  不写 = `visible`（2026-10-19 拍板）。写错档是红档 `company.access.cross_domain.invalid`。
+- **不属于任何域的公司级资料**（slug 为空）对登录进来的人都可见：它本来就渲染在每个人的 persona 里。
+- **它只答「看」**：派任务 / 审批 / 改配置的口径还没定全（R-12 / #62），这里不替它们表态。
+
 ### 只读投影出口（`anc org export`）
 
 ```
@@ -978,7 +995,8 @@ pwsh -File build.ps1 -Only local  # 只编本机 windows/amd64
 | `board.go` | `anc org export` 的 CLI（只读投影，无写操作） |
 | `context.go` | `anc context` 的 CLI：`pack`（给一份只读投影）/ `freeze`（把这一份冻进 `vault/context/`）（与 MCP / 看板共用同一个装配点） |
 | `internal/ctxpack/` | 工作上下文包的唯一装配点（纯函数；MCP / CLI / 看板三处共用，除回答时刻外逐字段相同） |
-| `org.go` | `anc org who` 的 CLI（平台身份 → 谁；只查表，不猜） |
+| `org.go` | `anc org who` / `anc org access` 的 CLI（平台身份 → 谁；这个 open_id 能看哪些域） |
+| `internal/org/access.go` | 进门判定：open_id 白名单 → `Viewer`（管理员 / 所属域 / 跨域可见） |
 | `internal/board/` | org 真相源 → 看板消费的只读 JSON（纯函数，不含凭据面字段） |
 | `internal/board/server.go` | 看板的只读 HTTP 出口（GET / HEAD；投影 + 校验发现） |
 | `internal/board/ui/` | 看板前端**产物**（手写 `index.html` + 构建出的 `app.js`）；`go:embed` 进二进制 |

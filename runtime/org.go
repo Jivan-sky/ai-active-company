@@ -159,3 +159,129 @@ func printSide(title string, s *whoSide) {
 	}
 	fmt.Printf("      这台        %s\n", s.Project)
 }
+
+const orgAccessUsage = `anc org access —— 这个 open_id 在这家公司里是谁、能看哪些域（只查表，不猜）
+
+用法：
+  anc org access <vault> --open-id <ou_…> [--domain <slug>] [--json]
+
+选项：
+  --open-id <ou_…>   平台那边唯一的「人」标识
+  --domain <slug>    额外判一次「能不能看这个域」
+  --json             机器读的出口
+
+白名单制：对不上 members/ 的 open_id 一律拒绝，停用（disabled）的成员同样拒绝。
+跨域可见性由 company.md 的 access.cross_domain 决定，不写 = visible。
+「拒绝」是判定结果，不是命令失败 —— 退出码仍是 0，脚本读 --json 的 allowed。
+`
+
+// accessOut 是 `anc org access` 的出口。判定和「凭什么」分开写：
+// 拒绝时 allowed=false、why 说清是没人认领还是已经停用，调用方不用猜。
+type accessOut struct {
+	Vault       string   `json:"vault"`
+	OpenID      string   `json:"open_id"`
+	Allowed     bool     `json:"allowed"`
+	Member      string   `json:"member,omitempty"`
+	Name        string   `json:"name,omitempty"`
+	Role        string   `json:"role,omitempty"`
+	Admin       bool     `json:"admin"`
+	Domains     []string `json:"domains,omitempty"`
+	AllDomains  bool     `json:"all_domains"`
+	CrossDomain string   `json:"cross_domain"` // 生效值：visible / hidden
+	Domain      string   `json:"domain,omitempty"`
+	CanSee      *bool    `json:"can_see,omitempty"`
+	Why         string   `json:"why,omitempty"`
+}
+
+func cmdOrgAccess(args []string) int {
+	fs := flag.NewFlagSet("org access", flag.ContinueOnError)
+	openID := fs.String("open-id", "", "平台那边唯一的「人」标识")
+	domain := fs.String("domain", "", "额外判一次能不能看这个域")
+	asJSON := fs.Bool("json", false, "机器读的出口")
+	flagArgs, posArgs := splitArgs(args, map[string]bool{"json": true})
+	if err := fs.Parse(flagArgs); err != nil {
+		return 2
+	}
+	if len(posArgs) != 1 || strings.TrimSpace(*openID) == "" {
+		fmt.Fprint(os.Stderr, orgAccessUsage)
+		return 2
+	}
+	abs, err := filepath.Abs(posArgs[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "错误: %v\n", err)
+		return 2
+	}
+	o, err := org.Load(abs)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "错误: %v\n", err)
+		return 1
+	}
+
+	out := accessOut{
+		Vault:       abs,
+		OpenID:      strings.TrimSpace(*openID),
+		CrossDomain: o.Company.Access.EffectiveCrossDomain(),
+	}
+	v, ok := o.ResolveViewer(*openID)
+	if ok {
+		out.Allowed = true
+		out.Member, out.Name, out.Role = v.Member.Name, v.Member.DisplayName, v.Member.Role
+		out.Admin, out.Domains, out.AllDomains = v.Admin, v.Domains, v.AllDomains
+	} else {
+		out.Why = "对不上 members/ 里的 feishu.open_id，或该成员已停用 —— 白名单制，拒绝"
+	}
+	if d := strings.TrimSpace(*domain); d != "" {
+		out.Domain = d
+		can := ok && v.CanSeeDomain(d)
+		out.CanSee = &can
+	}
+
+	if *asJSON {
+		b, err := json.MarshalIndent(out, "", "  ")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "错误: %v\n", err)
+			return 1
+		}
+		fmt.Println(string(b))
+		return 0
+	}
+
+	fmt.Printf("anc org access —— 这个 open_id 能看什么\n")
+	fmt.Printf("  vault      %s\n", abs)
+	fmt.Printf("  open_id    %s\n", out.OpenID)
+	if !out.Allowed {
+		fmt.Printf("  判定       拒绝\n")
+		fmt.Printf("  为什么     %s\n", out.Why)
+		return 0
+	}
+	fmt.Printf("  判定       放行\n")
+	fmt.Printf("  人         %s（%s）\n", out.Member, out.Name)
+	if out.Role != "" {
+		fmt.Printf("  岗位       %s\n", out.Role)
+	}
+	fmt.Printf("  管理员     %s\n", yesNo(out.Admin))
+	if len(out.Domains) > 0 {
+		fmt.Printf("  所属域     %s\n", strings.Join(out.Domains, "、"))
+	} else {
+		fmt.Printf("  所属域     —（没写 domains）\n")
+	}
+	fmt.Printf("  跨域口径   %s\n", out.CrossDomain)
+	if out.AllDomains {
+		fmt.Printf("  可见域     全部\n")
+	} else if len(out.Domains) > 0 {
+		fmt.Printf("  可见域     %s（跨域不可见）\n", strings.Join(out.Domains, "、"))
+	} else {
+		fmt.Printf("  可见域     只有公司级资料（跨域不可见，且没写 domains）\n")
+	}
+	if out.CanSee != nil {
+		fmt.Printf("  domain=%s  %s\n", out.Domain, yesNo(*out.CanSee))
+	}
+	return 0
+}
+
+func yesNo(b bool) string {
+	if b {
+		return "是"
+	}
+	return "否"
+}

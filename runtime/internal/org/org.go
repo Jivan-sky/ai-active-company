@@ -26,9 +26,12 @@ type Company struct {
 	Display         string
 	Admins          []string
 	SyncIntervalMin int
-	Defaults        Defaults
-	Fallback        *FallbackProvider
-	Body            string
+	// Access 是「谁能看见哪些域」的公司级口径（company.md 的 access.*）。
+	// 判定逻辑在 access.go；这里只放客户自己定的值。
+	Access   AccessRules
+	Defaults Defaults
+	Fallback *FallbackProvider
+	Body     string
 }
 
 // [display].mode 的合法取值（cc-connect 的口径，多一个都不认）。
@@ -289,6 +292,9 @@ func Load(root string) (*Org, error) {
 		return nil, err
 	}
 	if c.Admins, err = cd.StrList("admins"); err != nil {
+		return nil, err
+	}
+	if c.Access.CrossDomain, err = cd.Str("access.cross_domain"); err != nil {
 		return nil, err
 	}
 	if c.SyncIntervalMin, err = cd.Int("sync_interval_min"); err != nil {
@@ -613,6 +619,13 @@ func (o *Org) Validate(p *Policy) *Report {
 		rep.Add(p.Issue("company.display.invalid", companyFile,
 			"display=%q 不认识：cc-connect 只吃 %s（不写 = 出厂默认 %s）",
 			o.Company.Display, strings.Join(DisplayModes, " / "), DisplayQuiet))
+	}
+	// 跨域可见性写错会静默改变「谁能看到什么」—— 权限口径不许猜。
+	if !ValidCrossDomain(o.Company.Access.CrossDomain) {
+		rep.Add(p.Issue("company.access.cross_domain.invalid", companyFile,
+			"access.cross_domain=%q 不认识：只认 %s / %s（不写 = 出厂默认 %s）",
+			o.Company.Access.CrossDomain,
+			CrossDomainModeVisible, CrossDomainModeHidden, CrossDomainModeVisible))
 	}
 
 	var devbots int
