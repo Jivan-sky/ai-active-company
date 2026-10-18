@@ -122,6 +122,24 @@ func (st *Store) do(args ...string) (any, error) {
 	return nil, err
 }
 
+// doPipeline 是批量读的出口。口径同 do：坏连接先换；中途失败就整条换掉、不重发。
+func (st *Store) doPipeline(cmds [][]string) ([]any, error) {
+	c := st.currentConn()
+	if c.isDead() {
+		nc, err := st.replaceConn(c)
+		if err != nil {
+			return nil, fmt.Errorf("hot: 手里这条连接已经失效，且换不上新的：%w", err)
+		}
+		c = nc
+	}
+	reps, err := c.doPipeline(cmds)
+	if err == nil {
+		return reps, nil
+	}
+	_, _ = st.replaceConn(c)
+	return nil, err
+}
+
 func (st *Store) currentConn() *respConn {
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -287,8 +305,15 @@ func (st *Store) Get(id string) (State, bool, error) {
 	return s, true, nil
 }
 
+// listBatch 是「一次管道读多少条」。太大只是把内存与单次停顿堆在一轮里，
+// 太小又退回到多次往返；200 对看板的量级够用，也不至于让一次刷新占住连接太久。
+const listBatch = 200
+
 // List 列举所有「进行中」的条目（最久没动的在前）。
 // 用 SCAN 而不是 KEYS：KEYS 在生产上会把整个 redis 卡住。
+//
+// 读法：每批一次管道，把「HGETALL + GET 租约 + PTTL」一起发出去。
+// 之前是逐条 Get（每条 3 次往返），101 条就是 303 次；现在一批 1 次。
 func (st *Store) List() ([]State, error) {
 	// nil 接收者：正常写法不该走到这儿（没接上就该让那口一直空着）。但真被调到了，
 	// 这里回一句人话，别当场 panic —— 调用方`var st *hot.Store`直接塞进接口时，
@@ -300,21 +325,64 @@ func (st *Store) List() ([]State, error) {
 	if err != nil {
 		return nil, err
 	}
-	out := make([]State, 0, len(keys))
+	ids := make([]string, 0, len(keys))
 	for _, k := range keys {
 		id := strings.TrimPrefix(k, st.prefix+":task:")
 		if id == "" || id == k {
 			continue
 		}
-		s, ok, err := st.Get(id)
+		ids = append(ids, id)
+	}
+	out := make([]State, 0, len(ids))
+	for start := 0; start < len(ids); start += listBatch {
+		end := start + listBatch
+		if end > len(ids) {
+			end = len(ids)
+		}
+		states, err := st.listBatch(ids[start:end])
 		if err != nil {
 			return nil, err
 		}
-		if ok {
-			out = append(out, s)
-		}
+		out = append(out, states...)
 	}
 	SortByAge(out)
+	return out, nil
+}
+
+// listBatch 读一批：所有 HGETALL / GET / PTTL 一次发出、一次收回。
+// 回复按「命令块的顺序」排：先是全部 HGETALL，再是全部 GET，最后是全部 PTTL。
+func (st *Store) listBatch(ids []string) ([]State, error) {
+	cmds := make([][]string, 0, len(ids)*3)
+	for _, id := range ids {
+		cmds = append(cmds, []string{"HGETALL", TaskKey(st.prefix, id)})
+	}
+	for _, id := range ids {
+		cmds = append(cmds, []string{"GET", LeaseKey(st.prefix, id)})
+	}
+	for _, id := range ids {
+		cmds = append(cmds, []string{"PTTL", LeaseKey(st.prefix, id)})
+	}
+	reps, err := st.doPipeline(cmds)
+	if err != nil {
+		return nil, err
+	}
+	if len(reps) != len(cmds) {
+		return nil, fmt.Errorf("hot: 管道回包数不对（%d/%d）", len(reps), len(cmds))
+	}
+	now := st.now()
+	out := make([]State, 0, len(ids))
+	for i := range ids {
+		m, err := fieldsFromReply(reps[i])
+		if err != nil {
+			return nil, err
+		}
+		if len(m) == 0 {
+			continue // SCAN 之后被删了：不算错，只是这次没有它
+		}
+		rawLease, _ := reps[len(ids)+i].(string)
+		ms, _ := reps[2*len(ids)+i].(int64)
+		out = append(out, applyLease(StateFromFields(m), rawLease, ms, now))
+	}
 	return out, nil
 }
 
@@ -426,10 +494,11 @@ func (st *Store) claimIf(id, who string, lease time.Duration, session, needStage
 		return State{}, err
 	}
 	if rep == nil { // NX 没抢到
-		owner, _, _, lerr := st.leaseOf(id)
+		raw, _, lerr := st.leaseOf(id)
 		if lerr != nil {
 			return State{}, lerr
 		}
+		owner, _ := splitLease(raw)
 		return State{}, &ErrOccupied{ID: id, Owner: owner}
 	}
 	fence, err := st.nextFence(id)
@@ -566,6 +635,11 @@ func (st *Store) hash(key string) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	return fieldsFromReply(rep)
+}
+
+// fieldsFromReply 把一次 HGETALL 的回复折成 map。单读与管道读共用这一份解析。
+func fieldsFromReply(rep any) (map[string]string, error) {
 	items, ok := rep.([]any)
 	if !ok {
 		if rep == nil {
@@ -585,23 +659,34 @@ func (st *Store) hash(key string) (map[string]string, error) {
 	return m, nil
 }
 
-// leaseOf 回 (认领人, 围栏号, 剩余毫秒)。剩余 -1 = 没有过期时间（不到期），-2 = 没人认领。
-func (st *Store) leaseOf(id string) (string, int64, int64, error) {
+// leaseOf 回 (租约原文, 剩余毫秒)。原文空 = 没人认领；-1 = 没有过期时间（不到期）；-2 = 没这条键。
+// 原文保留 `owner|fence` 的形状 —— 拆开是 applyLease 的事，单读与批量读共用同一支。
+func (st *Store) leaseOf(id string) (string, int64, error) {
 	key := LeaseKey(st.prefix, id)
 	rep, err := st.do("GET", key)
 	if err != nil {
-		return "", 0, 0, err
+		return "", 0, err
 	}
 	raw, _ := rep.(string)
-	owner, fence := splitLease(raw)
-	if owner == "" {
-		return "", 0, -2, nil
+	if strings.TrimSpace(raw) == "" {
+		return "", -2, nil
 	}
 	repTTL, err := st.do("PTTL", key)
 	if err != nil {
-		return "", 0, 0, err
+		return "", 0, err
 	}
 	ms, _ := repTTL.(int64)
+	return raw, ms, nil
+}
+
+// leaseParts 是单点读的便利形状：认领人 / 围栏 / 剩余毫秒。
+// 批量读不走这里 —— 它直接拿原文，和对应的 PTTL 一批折进去。
+func (st *Store) leaseParts(id string) (string, int64, int64, error) {
+	raw, ms, err := st.leaseOf(id)
+	if err != nil {
+		return "", 0, 0, err
+	}
+	owner, fence := splitLease(raw)
 	return owner, fence, ms, nil
 }
 
@@ -619,24 +704,30 @@ func splitLease(v string) (string, int64) {
 // withLease 把租约折成「到期时刻」塞进返回值 —— 租约是「还有多久」，
 // 存下来立刻就成了旧值，不如回读一次算出来。
 func (st *Store) withLease(s State) (State, error) {
-	owner, fence, ms, err := st.leaseOf(s.ID)
+	raw, ms, err := st.leaseOf(s.ID)
 	if err != nil {
 		return State{}, err
 	}
+	return applyLease(s, raw, ms, st.now()), nil
+}
+
+// applyLease 把「租约原文 + 剩余毫秒」折进状态。单读与批量读共用，避免两套口径。
+func applyLease(s State, raw string, ms int64, now time.Time) State {
+	owner, fence := splitLease(raw)
 	s.LeaseTo = ""
 	s.LeaseNoExpiry = false
-	if strings.TrimSpace(owner) == "" {
-		return s, nil
+	if owner == "" {
+		return s
 	}
 	s.Fence = fence
 	if ms == -1 {
 		s.LeaseNoExpiry = true
-		return s, nil
+		return s
 	}
 	if ms > 0 {
-		s.LeaseTo = st.now().Add(time.Duration(ms) * time.Millisecond).Format(time.RFC3339)
+		s.LeaseTo = now.Add(time.Duration(ms) * time.Millisecond).Format(time.RFC3339)
 	}
-	return s, nil
+	return s
 }
 
 func (st *Store) scan(pattern string) ([]string, error) {

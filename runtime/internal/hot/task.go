@@ -156,7 +156,7 @@ func (st *Store) AckTaskFenced(id, who string, fence int64, status, note string)
 	if strings.TrimSpace(s.Stage) == "" {
 		s.Stage = DeriveStage(s.Status)
 	}
-	owner, leaseFence, _, err := st.leaseOf(id)
+	owner, leaseFence, _, err := st.leaseParts(id)
 	if err != nil {
 		return State{}, err
 	}
@@ -531,7 +531,7 @@ func (st *Store) requireHeld(s State, who string, fence int64) error {
 	if strings.TrimSpace(s.To) != "" && s.To != who {
 		return fmt.Errorf("hot: 任务 %s 是交给 %s 的，不是 %s —— 不能替别人交接 / 提交", s.ID, s.To, who)
 	}
-	owner, leaseFence, ms, err := st.leaseOf(s.ID)
+	owner, leaseFence, ms, err := st.leaseParts(s.ID)
 	if err != nil {
 		return err
 	}

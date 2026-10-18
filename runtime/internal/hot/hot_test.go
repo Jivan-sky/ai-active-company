@@ -372,6 +372,7 @@ func TestListScansAndReads(t *testing.T) {
 		"*2\r\n$1\r\n0\r\n*1\r\n$10\r\nanc:task:a\r\n",                   // SCAN 一轮就完
 		"*4\r\n$2\r\nid\r\n$1\r\na\r\n$6\r\nstatus\r\n$7\r\nrunning\r\n", // HGETALL
 		"$-1\r\n", // GET 租约：没人认领
+		":-2\r\n", // PTTL 租约：没有这条键
 	)
 	list, err := st.List()
 	if err != nil {
@@ -382,6 +383,52 @@ func TestListScansAndReads(t *testing.T) {
 	}
 	if strings.Contains(f.writes.String(), "KEYS") {
 		t.Fatalf("用了 KEYS —— 在生产上会把整个 redis 卡住：%q", f.writes.String())
+	}
+}
+
+// 批量读要一次发完：先全部 HGETALL，再全部 GET，最后全部 PTTL。
+// 顺序错了会把 B 的租约贴到 A 上 —— 这种错不会报错，只会让看板显示错的认领人。
+func TestListPipelinesHashAndLease(t *testing.T) {
+	st, f := fakeStore(t,
+		"*2\r\n$1\r\n0\r\n*2\r\n$10\r\nanc:task:a\r\n$10\r\nanc:task:b\r\n",
+		"*4\r\n$2\r\nid\r\n$1\r\na\r\n$6\r\nstatus\r\n$7\r\nrunning\r\n",
+		"*4\r\n$2\r\nid\r\n$1\r\nb\r\n$6\r\nstatus\r\n$6\r\nqueued\r\n",
+		"$7\r\nalice|7\r\n",
+		"$-1\r\n",
+		":60000\r\n",
+		":-2\r\n",
+	)
+	list, err := st.List()
+	if err != nil {
+		t.Fatalf("列举失败：%v", err)
+	}
+	byID := map[string]State{}
+	for _, s := range list {
+		byID[s.ID] = s
+	}
+	if len(byID) != 2 {
+		t.Fatalf("该有两条：%#v", list)
+	}
+	a := byID["a"]
+	if a.Fence != 7 || a.LeaseTo == "" {
+		t.Fatalf("a 的租约没折进来：%+v", a)
+	}
+	b := byID["b"]
+	if b.Fence != 0 || b.LeaseTo != "" || b.LeaseNoExpiry {
+		t.Fatalf("b 没有租约，不该借到 a 的：%+v", b)
+	}
+	w := f.writes.String()
+	if got := strings.Count(w, "$7\r\nHGETALL\r\n"); got != 2 {
+		t.Fatalf("HGETALL 该发 2 条，实发 %d：%q", got, w)
+	}
+	if got := strings.Count(w, "$3\r\nGET\r\n"); got != 2 {
+		t.Fatalf("GET 租约该发 2 条，实发 %d：%q", got, w)
+	}
+	if got := strings.Count(w, "$4\r\nPTTL\r\n"); got != 2 {
+		t.Fatalf("PTTL 该发 2 条，实发 %d：%q", got, w)
+	}
+	if strings.Index(w, "$3\r\nGET\r\n") < strings.LastIndex(w, "HGETALL") {
+		t.Fatalf("租约读取不该插在 hash 读取中间：%q", w)
 	}
 }
 

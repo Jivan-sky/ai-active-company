@@ -3870,6 +3870,33 @@ timeline + 102 条待办入队 + 31 条被后文覆盖/收口；3 份只有散�
 `pull(fence=1) → ack(done, v3) → settle`，热层 102 → 101，settle 在
 `timeline/` 新增一条绿档；看板（独立前缀）`/api/hot` 读到 101 条 queued，
 `/api/timeline` 200。`go test -count=1 ./...` 全绿（新增 parser 与 CLI 用例）。
+
+### 7.1.75 热层批量读：把 303 次往返压成 1 次（2026-10-19）
+
+**问题**：`/api/hot` 在 101 条任务时要 ~290ms。`List()` 当时是「SCAN 出 key，
+再逐条 `Get()`」—— 每条要 `HGETALL` + `GET` 租约 + `PTTL` 三次往返，
+101 条就是 303 次。局域网里每次约 1ms，正好把一次刷新拖到 300ms。
+
+**落点**：
+
+- `respConn.doPipeline`：一次把 N 条命令写完、`Flush` 一次，再按顺序读 N 个回复；
+  单读的 `writeCmd` 与它共用同一段编码。
+- `Store.doPipeline`：换连接的口径与 `do` 相同 —— 坏连接先换，这条命令**不重发**。
+- `List()` 按 `listBatch = 200` 分块；每块一次管道：先全部 `HGETALL`、再全部
+  `GET` 租约、最后全部 `PTTL`。回复按命令块顺序取，不会把 B 的租约贴到 A 上。
+- 单读的 `withLease` 与批量读共用 `applyLease`（原文 + 剩余毫秒 → `Fence` /
+  `LeaseTo` / `LeaseNoExpiry`），两边只有一条租约口径。
+
+**为什么中途失败就换连接**：管道读到一半出错时，缓冲区里还剩着没读完的回复，
+这条流已经对不齐了；继续用会把下一条命令的回复读成上一条的。所以整条标死、下次换新。
+
+**实测**（同一份冷启动数据，101 条，Windows 本机）：优化前 280–312ms/次；
+优化后稳态 18–40ms/次（首调用 198ms，含连接预热）。新增
+`TestListPipelinesHashAndLease` 锁住「HGETALL ×N → GET ×N → PTTL ×N」的顺序；
+`go vet ./...`、`go test -count=1 ./...`（23 包）、`go build ./...` 全绿。
+
+**没做什么**：`ListAgents()` 仍逐条读（agent 数量级小，等真变多再改）；
+没有给 timeline 做索引 / 分片（那是另一条风险 R-04）。
 ## 8. 与 SPEC 的映射
 
 | 本文 | SPEC |

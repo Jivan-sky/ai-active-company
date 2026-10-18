@@ -87,6 +87,45 @@ func (rc *respConn) do(args ...string) (any, error) {
 	return rep, nil
 }
 
+// doPipeline 一次写 N 条命令、按顺序读 N 个回复。
+//
+// 为什么要它：批量读的瓶颈是「一条命令一次往返」。101 条任务各读 3 次就是 303 次，
+// 每次 1ms 左右就够把看板拖到 300ms。管道把这些往返压成 1 次，服务端照旧逐条回。
+//
+// 失败即判死：读到一半出错时，缓冲区里还剩着没读完的回复，这条流已经对不齐了；
+// 与其后面把 A 的回复当成 B 的，不如整条换掉（调用方那条命令不重发，口径同 do）。
+func (rc *respConn) doPipeline(cmds [][]string) ([]any, error) {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	if len(cmds) == 0 {
+		return nil, nil
+	}
+	if d, ok := rc.rw.(deadlineSetter); ok {
+		_ = d.SetDeadline(time.Now().Add(rc.timeout))
+	}
+	for _, args := range cmds {
+		if err := rc.writeCmdBuffered(args); err != nil {
+			rc.dead = true
+			return nil, err
+		}
+	}
+	if err := rc.w.Flush(); err != nil {
+		rc.dead = true
+		return nil, err
+	}
+	reps := make([]any, 0, len(cmds))
+	for range cmds {
+		rep, err := rc.readReply()
+		if err != nil {
+			// 包括热层回的 `-ERR`：单条命令被拒也意味着后面的回复位置已经对不上。
+			rc.dead = true
+			return reps, err
+		}
+		reps = append(reps, rep)
+	}
+	return reps, nil
+}
+
 // isDead 报「这条连接还值不值得留着」。
 func (rc *respConn) isDead() bool {
 	rc.mu.Lock()
@@ -95,6 +134,14 @@ func (rc *respConn) isDead() bool {
 }
 
 func (rc *respConn) writeCmd(args []string) error {
+	if err := rc.writeCmdBuffered(args); err != nil {
+		return err
+	}
+	return rc.w.Flush()
+}
+
+// writeCmdBuffered 只写不 flush —— 管道要先把整批写完，再一次刷出去。
+func (rc *respConn) writeCmdBuffered(args []string) error {
 	if len(args) == 0 {
 		return errors.New("hot: 空命令")
 	}
@@ -106,7 +153,7 @@ func (rc *respConn) writeCmd(args []string) error {
 			return err
 		}
 	}
-	return rc.w.Flush()
+	return nil
 }
 
 func (rc *respConn) readReply() (any, error) {
