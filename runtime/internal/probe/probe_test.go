@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -73,6 +74,68 @@ func TestJudgeLevels(t *testing.T) {
 				t.Fatalf("档位 %s，期望 %s（%s）", got.State, c.want, got.Why)
 			}
 		})
+	}
+}
+
+// writeSessionsRaw 与 writeSessions 的差别只有一处：内容由用例给 ——
+// 「空回复」这一档必须能造出来，不能靠一个写着「…」的占位符假装。
+func writeSessionsRaw(t *testing.T, dir, name, agentID string, now time.Time, msgs ...struct{ Role, Content, Offset string }) string {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	type msg struct {
+		Role      string `json:"role"`
+		Content   string `json:"content"`
+		Timestamp string `json:"timestamp"`
+	}
+	out := make([]msg, 0, len(msgs))
+	for _, m := range msgs {
+		d, err := time.ParseDuration(m.Offset)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, msg{m.Role, m.Content, now.Add(d).Format(time.RFC3339Nano)})
+	}
+	one := map[string]any{"sessions": map[string]any{
+		"s1": map[string]any{"id": "s1", "name": "default", "agent_session_id": agentID, "history": out},
+	}}
+	b, err := json.Marshal(one)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(dir, name)
+	if err := os.WriteFile(p, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// 议题 #51：能机械判定的那部分不许漏 —— 空回复不算「回过话」。
+// 语义对不对（回了错误话）仍留给人，这里只钉「有没有内容」。
+func TestJudgeEmptyReplyIsNotGreen(t *testing.T) {
+	now := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
+	j := func(msgs ...struct{ Role, Content, Offset string }) Finding {
+		p := writeSessionsRaw(t, t.TempDir(), "p_x.json", "s1", now, msgs...)
+		return Judge("p", []string{p}, now, DefaultStale, DefaultStall)
+	}
+	m := func(role, content, offset string) struct{ Role, Content, Offset string } {
+		return struct{ Role, Content, Offset string }{role, content, offset}
+	}
+
+	if got := j(m("user", "在吗", "-2m"), m("assistant", "", "-1m")); got.State == StateOK {
+		t.Fatalf("空回复被当成回过话（假绿）：%+v", got)
+	} else if !strings.Contains(got.Why, "空") {
+		t.Fatalf("原因里要说清是空回复：%s", got.Why)
+	}
+	if got := j(m("user", "在吗", "-2m"), m("assistant", "   \n", "-1m")); got.State == StateOK {
+		t.Fatalf("纯空白回复被当成回过话（假绿）：%+v", got)
+	}
+	if got := j(
+		m("user", "在吗", "-5m"), m("assistant", "", "-4m"),
+		m("user", "再问一次", "-3m"), m("assistant", "在。", "-2m"),
+	); got.State != StateOK {
+		t.Fatalf("空回复之后又有真回复，应当绿：%+v", got)
 	}
 }
 

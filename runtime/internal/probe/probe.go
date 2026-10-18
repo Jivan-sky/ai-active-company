@@ -17,6 +17,9 @@
 //	warn    没观测到 / 久无成功交互 —— 这一档**不许**报绿；
 //	fail    有消息但 agent 起不来，或最后一轮迟迟不回；
 //	unwired 声明过「还没接平台凭据」—— 本来就不该期待它回话，单列灰，不挡绿。
+//
+// 「真实回复」的机械口径：assistant 记录的内容**非空**。空内容（只调了工具、或异常返回空）
+// 不算回过话 —— 语义对不对仍留给人（议题 #51）：能机械判定的漏判不许留，判不了的明确不判。
 package probe
 
 import (
@@ -106,6 +109,7 @@ type ccSessions struct {
 		AgentSessionID string `json:"agent_session_id"`
 		History        []struct {
 			Role      string `json:"role"`
+			Content   string `json:"content"`
 			Timestamp string `json:"timestamp"`
 		} `json:"history"`
 	} `json:"sessions"`
@@ -212,7 +216,7 @@ func Judge(project string, files []string, now time.Time, stale, stall time.Dura
 	if len(files) == 0 {
 		return Finding{project, StateWarn, "没观测到任何会话 —— 「没消息 = 没事」是反模式，所以这里不许报绿"}
 	}
-	var lastUser, lastAssistant time.Time
+	var lastUser, lastAssistant, lastEmpty time.Time
 	neverStarted := false
 	msgs := 0
 	for _, f := range files {
@@ -237,6 +241,14 @@ func Judge(project string, files []string, now time.Time, stale, stall time.Dura
 						lastUser = ts
 					}
 				case "assistant":
+					// 空回复不是「回过话」：只调了工具、或异常返回空，都证明不了它能说话。
+					// 单记一个时间，最后一轮是不是空回复要看得见（议题 #51）。
+					if strings.TrimSpace(h.Content) == "" {
+						if ts.After(lastEmpty) {
+							lastEmpty = ts
+						}
+						continue
+					}
 					if ts.After(lastAssistant) {
 						lastAssistant = ts
 					}
@@ -256,6 +268,9 @@ func Judge(project string, files []string, now time.Time, stale, stall time.Dura
 		return Finding{project, StateFail, "有消息、但 agent 从没起来过（agent_session_id 为空）—— 多半是 work_dir / 工具白名单 / agent 二进制的问题，查 gateway 日志"}
 	}
 	if !lastUser.IsZero() && lastUser.After(lastAssistant) {
+		if lastEmpty.After(lastUser) {
+			return Finding{project, StateWarn, "最后一轮 assistant 记录是空内容 —— 空回复不算「回过话」（可能只调了工具，也可能异常）；不报绿，请人看一眼"}
+		}
 		if since := now.Sub(lastUser); since > stall {
 			return Finding{project, StateFail, fmt.Sprintf("最后一轮消息发出 %s 还没有回复（超过 --stall %s）", since.Round(time.Second), stall)}
 		}
@@ -263,6 +278,9 @@ func Judge(project string, files []string, now time.Time, stale, stall time.Dura
 	}
 	switch {
 	case lastAssistant.IsZero():
+		if !lastEmpty.IsZero() {
+			return Finding{project, StateWarn, "只有过空回复（assistant 记录为空），还没有一次有内容的回复"}
+		}
 		return Finding{project, StateWarn, "只有用户消息，还没有过一次回复"}
 	case now.Sub(lastAssistant) > stale:
 		return Finding{project, StateWarn, fmt.Sprintf("最近一次成功回复在 %s 前，超过 --stale %s —— 没人打扰它的话，这个窗口里它到底能不能回话是不知道的",
