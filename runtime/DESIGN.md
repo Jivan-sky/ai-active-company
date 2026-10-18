@@ -83,20 +83,21 @@
 ## 2. 账号与目录布局
 
 ```
-/opt/anc/vault/          root 拥有、bot 只读；git ff-only 副本（客户库真相源在这里）
-/opt/anc/harness/        官方 CLI 本体，root 拥有、只读；升级一次全 bot 生效
-/opt/anc/bin/anc         装配器 + serve（单 exe）
-/Users/anc-<bot>/        bot 账号 HOME（0700）
-  .anc/creds/            该账号专属凭据（0600）；不进 git、不进日志
-  bot/                   cwd：AGENTS.md / CLAUDE.md（渲染产物，带指纹头）、skills/、inbox/
-  state/                 会话记录、探针游标、审计暂存（不进 git）
+<vault>/                       客户库真相源（git）：org 子树 + 数据目录；bot 只读
+<homes_root>/<成员>/           cwd（0700）：AGENTS.md / CLAUDE.md（渲染产物，带指纹头）、skills/、inbox/
+<homes_root>/<成员>/state/     会话记录、探针游标、审计暂存（不进 git）
+<config>                       gateway 配置（默认 <vault>/../gateway/config.toml）
+<data>                         gateway 的 data_dir（默认 <vault>/../data）
+~/.anc/bin/anc                 装配器（单 exe）
+<共享>/harness/                官方 CLI 本体：root 拥有、只读；升级一次全 bot 生效
 ```
 
 - **共享 CLI 本体 + 独立 HOME = 独立凭据**：各官方 CLI 的凭据落在 `$HOME` 或该账号的登录钥匙串里，按账号天然隔离；共享本体只省磁盘与升级次数，**不承担隔离职责**。
 - 隔离靠 **OS 账号 + 独立进程 + 独立 HOME + 独立凭据**（SPEC §6-9）。cwd 只是挂载点，**不是授权边界**。
 - **布局与隔离档解耦（2026-10-07 拍板，D6）**：布局固定为 `<homes_root>/<成员>/`；
   D1 只决定 `<homes_root>` 落在哪：共享账号下的一个 homes 根，还是各账号的 `$HOME`。**模板只有一份**，不再等 D1。
-- `anc bootstrap` 是**唯一需要管理员权限**的动作，且只做上面列出的这几类目录与账号。**必须先 `--dry-run` 打印将要做的每一步**，人核对后再真跑（危险操作，见守则）。
+- **三个落点按旗标走、默认在 vault 的兄弟目录**（`--config` / `--homes` / `--data`），**绝不写进 vault** —— git 里只放 org 真相（议题 #24）。
+- 目录由谁建（实测）：`anc init` 建客户库骨架；`anc render --apply` 建每个成员的 cwd（0700）；`anc apply` 只做装载与回读。**没有 `anc bootstrap`** —— 需要管理员权限的只剩「把 homes_root 放到 `/opt` 或另开 OS 账号」这类部署选择，不在 ANC 里做成命令。
 
 ---
 
@@ -3476,6 +3477,23 @@ D5 在 2026-10-07 就拍了 (a)「合成一棵树、以客户库为根」，但 
 
 **没做**：没有给老 vault 做目录迁移 —— `40-roles/` 是个空目录、没有任何代码读它；
 客户库里若真放过 persona，那也是客户自己的文件，不做自动删除（不可逆动作不藏在 `init` 里）。
+
+### 7.1.62 §2 的目录树按已拍的 D6 重写；`bootstrap` 从来不存在（2026-10-18，议题 #15）
+
+议题 #15 的验收原文是「DESIGN §2 的目录树与 `anc bootstrap --dry-run` 打出来的清单逐条一致」——
+**这句前提是错的**：`bootstrap` 是 TS 时代设计里的名字，Go 实现从第一版起就没有这条命令
+（`anc help` 里没有；`rg bootstrap` 在 `runtime/` 的代码与模板里 0 命中）。拿一个不存在的命令当验收，永远验不过。
+
+**真正的缺口**是 §2 的树还停在 `/opt/anc/vault` / `/Users/anc-<bot>/bot`：D6 在 2026-10-07 已拍
+「布局固定 `<homes_root>/<成员>/`，D1 只决定 homes_root 落哪」，§2 却两份都没跟上。
+
+**改了什么**：§2 的树改成今天真实的四类落点（vault / `<homes_root>/<成员>/` 与它的 `state/` /
+`<config>` / `<data>`），并写清谁建：`anc init` 建骨架、`anc render --apply` 建 work_dir（0700）、
+`anc apply` 只装载与回读。
+
+**实测**：临时目录走 `init → org init → render --apply` —— config 里三条 `work_dir` 分别是
+`<homes>/alice`、`<homes>/bob`、vault 本体（devbot），`homes/` 下真建出 alice / bob 两个目录。
+**没做**：D1（共享账号 vs 一人一 OS 账号）仍没拍 —— 它今天不影响布局，只影响 `<homes_root>` 放在哪。
 
 ## 8. 与 SPEC 的映射
 
