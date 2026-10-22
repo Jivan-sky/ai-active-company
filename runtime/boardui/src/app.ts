@@ -1,6 +1,6 @@
-import type { ContextView, GrantsView } from "./core/types";
+import type { ContextView, GrantsView, SearchView } from "./core/types";
 import { contract, fetchData, getJSON } from "./core/api";
-import { ctxQuery, currentId, grantsQuery, hashQuery } from "./core/query";
+import { ctxQuery, currentId, grantsQuery, hashQuery, searchQuery } from "./core/query";
 import { setReloader, setRerender } from "./core/refresh";
 import { cache, setCache } from "./core/state";
 import { activeSystemTab } from "./pages/system";
@@ -46,6 +46,20 @@ async function loadContext(): Promise<void> {
   shell();
 }
 
+// 检索页的取数：查询词 / 视角 / 域都在 URL 里。换一次条件只重取这一份；
+// 索引仍然是后端每次从 markdown 重建 —— 看板不另存一份会过期的答案。
+async function loadSearch(): Promise<void> {
+  if (searchQuery() === "") {
+    if (cache) setCache({ ...cache, search: null, searchErr: "" });
+    shell();
+    return;
+  }
+  const res = await getJSON<SearchView>("/api/search" + searchQuery());
+  const sr = contract(res, "知识检索");
+  if (cache) setCache({ ...cache, search: sr.v, searchErr: sr.err });
+  shell();
+}
+
 setRerender(shell);
 setReloader((force) => void boot(force));
 
@@ -53,6 +67,10 @@ window.addEventListener("hashchange", () => {
   // 这一页的「选中谁」在 hash 里：进了这一页就按 URL 重取一次，别的页照旧（取数只在启动 / 刷新）。
   if (pageFor(currentId()).id === "context") {
     void loadContext();
+    return;
+  }
+  if (pageFor(currentId()).id === "search") {
+    void loadSearch();
     return;
   }
   // 授权表并进了「系统 · 网关与授权」：换视角只重取它自己（那是**参数**，不是刷新）。

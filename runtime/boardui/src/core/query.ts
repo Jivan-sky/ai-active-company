@@ -17,6 +17,19 @@ export function grantsQuery(): string {
   p.set("who", who);
   return "?" + p.toString();
 }
+
+// 知识检索的取数参数（`#/search?q=结算&who=bob&domain=trade`）。
+// 与上下文页同一条纪律：问题 / 视角进 URL，刷新、前进后退、把链接发给别人都还停在同一次检索。
+export function searchQuery(): string {
+  const q = hashQuery();
+  const p = new URLSearchParams();
+  for (const key of ["q", "who", "domain"]) {
+    const v = (q.get(key) ?? "").trim();
+    if (v !== "") p.set(key, v);
+  }
+  const s = p.toString();
+  return s === "" ? "" : "?" + s;
+}
 export function currentId(): string {
   return location.hash.replace(/^#\/?/, "").split("?")[0]!.trim();
 }

@@ -1,5 +1,5 @@
-import { ctxQuery, grantsQuery } from "./query";
-import type { AgentsView, ApprovalView, AssetsView, AuditView, BoardView, ContextView, Data, DataflowView, DistillView, GrantsView, HotView, Issues, RuntimeView, TimelineView } from "./types";
+import { ctxQuery, grantsQuery, searchQuery } from "./query";
+import type { AgentsView, ApprovalView, AssetsView, AuditView, BoardView, ContextView, Data, DataflowView, DistillView, GrantsView, HotView, Issues, RuntimeView, SearchView, TimelineView } from "./types";
 
 // ---------- 取数 ----------
 
@@ -53,7 +53,11 @@ export function contract<T extends { schema?: string }>(res: Fetched<T>, label: 
 }
 
 export async function fetchData(): Promise<Data> {
-  const [boardRes, issuesRes, runtimeRes, dataflowRes, assetsRes, distillRes, timelineRes, auditRes, approvalsRes, hotRes, agentsRes, ctxRes, grantsRes] = await Promise.all([
+  // 搜索只在 URL 里真的带了 q 时才取：没有查询词就发一次注定被拒的请求，
+  // 既浪费一次全库建索引，又会让页面一进来就挂着一条假错误。
+  const sq = searchQuery();
+  const searchP: Promise<Fetched<SearchView> | null> = sq === "" ? Promise.resolve(null) : getJSON<SearchView>("/api/search" + sq);
+  const [boardRes, issuesRes, runtimeRes, dataflowRes, assetsRes, distillRes, timelineRes, auditRes, approvalsRes, hotRes, agentsRes, ctxRes, grantsRes, searchRes] = await Promise.all([
     getJSON<BoardView & { error?: string }>("/api/board"),
     getJSON<Issues>("/api/issues"),
     getJSON<RuntimeView>("/api/runtime"),
@@ -73,6 +77,7 @@ export async function fetchData(): Promise<Data> {
     getJSON<ContextView>("/api/context" + ctxQuery()),
     // 授权表那一页：视角也在 hash 里（#/grants?who=bizbot），所以取数照 URL 来。
     getJSON<GrantsView>("/api/grants" + grantsQuery()),
+    searchP,
   ]);
   const issues = issuesRes.body ?? emptyIssues(issuesRes.err);
   const rt = contract(runtimeRes, "运行态");
@@ -86,6 +91,7 @@ export async function fetchData(): Promise<Data> {
   const ag = contract(agentsRes, "Agent 在线态");
   const cx = contract(ctxRes, "工作上下文");
   const gr = contract(grantsRes, "授权表");
+  const se = searchRes ? contract(searchRes, "知识检索") : { v: null, err: "" };
   const schema = boardRes.body?.schema;
   if (boardRes.body && typeof schema === "string" && schema !== "") {
     return {
@@ -97,6 +103,7 @@ export async function fetchData(): Promise<Data> {
       runtime: rt.v, runtimeErr: rt.err,
       dataflow: df.v, dataflowErr: df.err,
       assets: as.v, assetsErr: as.err,
+      search: se.v, searchErr: se.err,
       distill: ds.v, distillErr: ds.err,
       timeline: tl.v, timelineErr: tl.err,
       audit: au.v, auditErr: au.err,
@@ -113,6 +120,7 @@ export async function fetchData(): Promise<Data> {
     runtime: rt.v, runtimeErr: rt.err,
     dataflow: df.v, dataflowErr: df.err,
     assets: as.v, assetsErr: as.err,
+    search: se.v, searchErr: se.err,
     distill: ds.v, distillErr: ds.err,
     timeline: tl.v, timelineErr: tl.err,
     audit: au.v, auditErr: au.err,

@@ -12,7 +12,6 @@ import (
 
 	"anc/internal/audit"
 	"anc/internal/org"
-	renderpkg "anc/internal/render"
 	"anc/internal/retrieval"
 )
 
@@ -77,10 +76,7 @@ type searchDoc struct {
 	Updated string `json:"updated,omitempty"`
 }
 
-type searchRefusal struct {
-	Reason string `json:"reason"`
-	Ask    string `json:"ask,omitempty"`
-}
+type searchRefusal = retrieval.Refusal
 
 func cmdSearch(args []string) int {
 	fs := flag.NewFlagSet("search", flag.ContinueOnError)
@@ -120,25 +116,21 @@ func cmdSearch(args []string) int {
 		Vault: abs, Query: strings.TrimSpace(*q), Who: strings.TrimSpace(*who),
 		At: time.Now().Format(time.RFC3339),
 	}
-	sc, refuse, ok := resolveSearchScope(o, out.Who)
-	if !ok {
+	sc, refuse := retrieval.ScopeFor(o, out.Who)
+	if refuse != nil {
 		out.Refused = refuse
 		return printSearch(out, *asJSON, true)
 	}
-	out.Scope = scopeLabels(sc)
+	out.Scope = retrieval.ScopeLabels(sc)
 
 	if d := strings.TrimSpace(*domain); d != "" {
-		if _, declared := o.Domain(d); !declared {
-			out.Refused = &searchRefusal{Reason: "domains.md 里没有「" + d + "」这块业务 —— 要么拼错了，要么这一域还没抽成表行"}
-			return printSearch(out, *asJSON, true)
-		}
-		if !sc.Allows(d) {
-			reason, helper := refuseDomainText(o, d)
-			out.Refused = &searchRefusal{Reason: reason, Ask: helper}
+		var narrowed *retrieval.Refusal
+		sc, narrowed = retrieval.NarrowToDomain(o, sc, d)
+		if narrowed != nil {
+			out.Refused = narrowed
 			return printSearch(out, *asJSON, true)
 		}
 		// 「只问这一块业务」也包含公司级资料 —— 与 Viewer.CanSeeDomain("") 同一口径。
-		sc = retrieval.Scope{Domains: []string{d}}
 		out.Scope = []string{d}
 		out.ScopeNote = "含公司级资料"
 	}
@@ -184,49 +176,6 @@ func cmdSearch(args []string) int {
 		out.Note = "没有命中 —— 可能是还没入库；不要按记忆补（查不到就说查不到）"
 	}
 	return printSearch(out, *asJSON, false)
-}
-
-// resolveSearchScope 解「这个主体能搜哪些域」。who 为空 = 本机操作者（全部域）。
-//
-// 成员跨域口径与看板进门判定同源（admin 或 access.cross_domain=visible）；业务 agent
-// **不跟着放宽** —— 它代的是岗位 / 流程，agents.md 的 domain 就是它的数据视野。
-func resolveSearchScope(o *org.Org, who string) (retrieval.Scope, *searchRefusal, bool) {
-	if who == "" {
-		return retrieval.Scope{All: true}, nil, true
-	}
-	id, ok := o.Identity(who)
-	if !ok {
-		return retrieval.Scope{}, &searchRefusal{
-			Reason: "我们公司没有这个人 —— 身份不许自报：who 必须能在 members/ 或 agents.md 里解出来",
-		}, false
-	}
-	sc := retrieval.Scope{Domains: id.Domains}
-	if id.Kind == org.KindMember {
-		v, found := o.ResolveMemberViewer(id.Ref)
-		if !found {
-			return retrieval.Scope{}, &searchRefusal{Reason: "这个成员不在白名单里或已停用 —— 拒绝（停用是离职回收的第一道闸）"}, false
-		}
-		sc.All, sc.Domains = v.AllDomains, v.Domains
-	}
-	return sc, nil, true
-}
-
-func scopeLabels(sc retrieval.Scope) []string {
-	if sc.All {
-		return []string{"*"}
-	}
-	return append([]string(nil), sc.Domains...)
-}
-
-func refuseDomainText(o *org.Org, slug string) (reason, helper string) {
-	if d, ok := o.Domain(slug); ok {
-		who := o.WhoLabel(d.Who)
-		if who == "—" {
-			who = ""
-		}
-		return renderpkg.RefuseDomainText(slug, who), who
-	}
-	return "domains.md 里没有「" + slug + "」这块业务 —— 要么拼错了，要么这一域还没抽成表行", ""
 }
 
 func printSearch(out searchOut, asJSON bool, refused bool) int {
@@ -310,8 +259,8 @@ func (g *envelopeIngress) searchKnowledge(args map[string]any) (string, bool) {
 		g.auditTool("anc_search", readActor(who), ask, audit.ResultFailed, "真相源加载失败", now)
 		return "真相源加载失败，搜不了：" + err.Error() + "\n（先修 org：anc org check <vault>）", true
 	}
-	sc, refuse, ok := resolveSearchScope(o, who)
-	if !ok {
+	sc, refuse := retrieval.ScopeFor(o, who)
+	if refuse != nil {
 		g.auditTool("anc_search", readActor(who), ask, audit.ResultDenied, refuse.Reason, now)
 		return mustJSON(map[string]any{"refused": refuse, "at": now.Format(time.RFC3339)}), true
 	}
@@ -320,20 +269,15 @@ func (g *envelopeIngress) searchKnowledge(args map[string]any) (string, bool) {
 		return "q 为空 —— 要查什么？", true
 	}
 	if ask != "" {
-		if _, declared := o.Domain(ask); !declared {
-			reason := "domains.md 里没有「" + ask + "」这块业务 —— 要么拼错了，要么这一域还没抽成表行"
-			g.auditTool("anc_search", who, "domain:"+ask, audit.ResultDenied, reason, now)
-			return mustJSON(map[string]any{"refused": map[string]any{"reason": reason}, "at": now.Format(time.RFC3339)}), true
-		}
-		if !sc.Allows(ask) {
-			reason, helper := refuseDomainText(o, ask)
-			g.auditTool("anc_search", who, ask, audit.ResultDenied, reason, now)
+		var narrowed *retrieval.Refusal
+		sc, narrowed = retrieval.NarrowToDomain(o, sc, ask)
+		if narrowed != nil {
+			g.auditTool("anc_search", who, ask, audit.ResultDenied, narrowed.Reason, now)
 			return mustJSON(map[string]any{
-				"refused": map[string]any{"reason": reason, "ask": helper},
+				"refused": narrowed,
 				"at":      now.Format(time.RFC3339),
 			}), true
 		}
-		sc = retrieval.Scope{Domains: []string{ask}}
 	}
 
 	ix, warns, err := retrieval.Open(g.Vault, o, retrieval.Config{
@@ -356,7 +300,7 @@ func (g *envelopeIngress) searchKnowledge(args map[string]any) (string, bool) {
 	g.auditTool("anc_search", who, object, audit.ResultOK, "", now)
 
 	out := map[string]any{
-		"who": who, "scope": scopeLabels(sc), "backend": ix.Name(),
+		"who": who, "scope": retrieval.ScopeLabels(sc), "backend": ix.Name(),
 		"indexed": ix.Len(), "visible": ix.Visible(sc),
 		"query": q, "count": len(hits), "hits": hits, "at": now.Format(time.RFC3339),
 	}
@@ -381,8 +325,8 @@ func (g *envelopeIngress) getDocument(args map[string]any) (string, bool) {
 		g.auditTool("anc_get", readActor(who), path, audit.ResultFailed, "真相源加载失败", now)
 		return "真相源加载失败，取不了：" + err.Error() + "\n（先修 org：anc org check <vault>）", true
 	}
-	sc, refuse, ok := resolveSearchScope(o, who)
-	if !ok {
+	sc, refuse := retrieval.ScopeFor(o, who)
+	if refuse != nil {
 		g.auditTool("anc_get", readActor(who), path, audit.ResultDenied, refuse.Reason, now)
 		return mustJSON(map[string]any{"refused": refuse, "at": now.Format(time.RFC3339)}), true
 	}

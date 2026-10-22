@@ -145,6 +145,9 @@ func TestServerServesUI(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "/api/board") {
 		t.Fatalf("app.js 里没有 /api/board —— 产物不对")
 	}
+	if !strings.Contains(rec.Body.String(), "/api/search") {
+		t.Fatalf("app.js 里没有 /api/search —— 检索页没进产物（改了 TS 要 npm run build）")
+	}
 }
 
 // 前端默认走内嵌；`--ui-dir` 那份能**盖过**内嵌 —— 但默认没被拆掉（默认那条见 TestServerServesUI）。
@@ -224,7 +227,7 @@ func TestServerOnRealListener(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := &http.Server{Handler: (&Server{Vault: fixturePath(t, "domains")}).Handler()}
+	srv := &http.Server{Handler: (&Server{Vault: searchFixture(t)}).Handler()}
 	errc := make(chan error, 1)
 	go func() { errc <- srv.Serve(ln) }()
 
@@ -233,6 +236,7 @@ func TestServerOnRealListener(t *testing.T) {
 		{"/", "<!doctype html"},
 		{"/app.js", "/api/board"},
 		{"/api/board", `"schema": "` + Schema + `"`},
+		{"/api/search?q=%E7%BB%93%E7%AE%97", `"schema": "` + SearchSchema + `"`},
 	} {
 		res, err := http.Get(base + c.path)
 		if err != nil {

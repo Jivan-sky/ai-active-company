@@ -424,7 +424,7 @@ body::before {
 .drow-time { flex: none; font: 10px var(--mono); color: var(--muted); }
 .gc.agent b { color: var(--rose); }
 
-/* 侧栏再收紧一点：13 条导航 + 6 组，一屏要能看见「系统」。 */
+/* 侧栏再收紧一点：14 条导航 + 6 组，一屏要能看见「系统」。 */
 .side-nav .nav-item { min-height: 38px; padding: 6px 9px; }
 .side-nav { padding-bottom: 8px; }
 .side-nav .nav-group { margin-top: 11px; }
@@ -452,6 +452,15 @@ body::before {
 [data-theme="light"] .dcard { background: rgba(255,255,255,0.68); }
 [data-theme="light"] .drow:hover { background: rgba(28,31,26,0.035); }
 [data-theme="light"] .gc.agent b { color: #a84363; }
+[data-theme="light"] .search-q, [data-theme="light"] .search-who, [data-theme="light"] .search-domain {
+  background: rgba(255,255,255,0.78); border-color: rgba(28,31,26,0.13);
+}
+[data-theme="light"] .search-q::placeholder { color: #8a8d84; }
+[data-theme="light"] .search-hit {
+  background: linear-gradient(165deg, rgba(255,255,255,0.92), rgba(250,249,244,0.76));
+  border-color: rgba(28,31,26,0.09);
+}
+[data-theme="light"] .search-hit:hover { background: rgba(255,255,255,0.96); border-color: rgba(28,31,26,0.17); }
 
 @media (max-width: 1180px) {
   .drawer { width: min(88vw, 1120px); }

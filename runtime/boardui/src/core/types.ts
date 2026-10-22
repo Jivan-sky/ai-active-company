@@ -86,6 +86,20 @@ export type AssetsView = {
   charters: number; note: string; error?: string;
 };
 
+// 知识检索（`/api/search`，schema = anc.search/v1）—— 「按当前可见范围，哪几篇相关」。
+// 这是**内容命中**，不是原料目录；不给正文结论，只给指针 + 片段。
+export type SearchHit = {
+  path: string; title?: string; domain?: string; score: number;
+  snippet?: string; updated?: string;
+};
+export type SearchView = {
+  schema: string; wired: boolean; query?: string; who?: string; domain?: string;
+  scope: string[]; scope_note?: string; backend?: string;
+  indexed: number; visible: number; count: number; hits: SearchHit[];
+  warnings?: string[]; note: string;
+  refused?: { reason: string; ask?: string }; error?: string; at: string;
+};
+
 // 可沉淀候选（`/api/distill`，schema = anc.distill/v1）。
 //
 // 候选 = timeline 里**最后一条是绿档**的 case；它只是原料，不是技能。
@@ -288,6 +302,7 @@ export type Data = {
   runtime: RuntimeView | null; runtimeErr: string;
   dataflow: DataflowView | null; dataflowErr: string;
   assets: AssetsView | null; assetsErr: string;
+  search: SearchView | null; searchErr: string;
   distill: DistillView | null; distillErr: string;
   timeline: TimelineView | null; timelineErr: string;
   audit: AuditView | null; auditErr: string;

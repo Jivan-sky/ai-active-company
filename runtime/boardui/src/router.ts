@@ -7,6 +7,7 @@ import { renderContext } from "./pages/context";
 import { renderGraph } from "./pages/graph";
 import { renderDomains, renderMembers, renderProjects } from "./pages/org";
 import { renderOverview } from "./pages/overview";
+import { renderSearch } from "./pages/search";
 import { renderSystem } from "./pages/system";
 import { renderTimeline } from "./pages/timeline";
 
@@ -64,6 +65,12 @@ export const assetsPage: Page = {
   id: "assets", group: "资产", label: "原料", icon: "box", wired: true,
   question: "手上有什么料、多久没动了？", view: renderAssets,
 };
+export const searchPage: Page = {
+  id: "search", group: "资产", label: "检索", icon: "search", wired: true,
+  question: "按我现在的可见范围，知识库里哪几篇相关？",
+  sub: "给指针 + 片段，不给正文结论；先按域过滤再打分，查不到就说没入库。",
+  view: renderSearch,
+};
 export const sedimentPage: Page = {
   id: "sediment", group: "资产", label: "沉淀", icon: "strata", wired: true,
   question: "料怎么分层、哪一层现在是真数？", view: renderSediment,
@@ -80,7 +87,7 @@ export const PAGES: Page[] = [
   projectsPage, contextPage,
   graphPage, membersPage, domainsPage,
   timelinePage, casesPage, auditPage,
-  assetsPage, sedimentPage,
+  assetsPage, searchPage, sedimentPage,
   systemPage,
 ];
 
