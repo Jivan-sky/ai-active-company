@@ -6,6 +6,8 @@ export type Role = { role: string; title: string; mode: string; model: string; v
 export type Member = {
   name: string; display_name: string; role: string;
   admin: boolean; disabled: boolean; model: string; domains: string[];
+  // v3 起才有；老服务（v2）不返回这两个字段 —— 前端按「未提供」处理，不拿 undefined 拼链接。
+  reports_to?: string; reports_to_label?: string;
 };
 export type DomainRow = {
   slug: string; name: string; what: string; who: string; who_label: string;
@@ -16,7 +18,7 @@ export type ProjectRow = {
   period: string; source: string; charter: string;
 };
 // 业务 agent（agents.md 一行）。与 Member 是两件事：成员 bot 代人，业务 agent 代岗位 / 流程。
-// 字段来自 anc.board/v2；老服务没有这一份时按空数组处理，不当成「没有 agent」下结论。
+// 字段来自 anc.board/v3；老服务没有这一份时按空数组处理，不当成「没有 agent」下结论。
 export type AgentRow = {
   slug: string; name: string; description: string; domain: string; role: string;
   harness: string; model: string; tools: string[]; wired: boolean;
@@ -202,12 +204,13 @@ export type DecideReply = {
 };
 
 // 一次取数、全程共用：已接入的页吃的是同一份投影，切页不重新打网络（按「刷新」才重取）。
-// 热层（`/api/hot`，schema = anc.hot/v1）—— 「热层里现在住着什么」。
+// 热层（`/api/hot`，schema = anc.hot/v2）—— 「热层里现在住着什么」。
 // 与 `/api/approvals` 是同一份底层数据、两个问题：那是**队列**（等谁点头），这是**这一层本身**。
 // wired=false 与 total=0 是两件事，所以两个字段都在（同 approvals 的口径）。
 export type HotEntryView = {
   id: string; status: string; stage?: string; fence?: number; attempt?: number; max_attempt?: number;
   title: string; by?: string; from?: string; to?: string;
+  domain?: string; project?: string;
   due_at?: string; priority?: string; overdue: boolean; overdue_secs?: number;
   root?: string; parent?: string; accept?: string; hop?: number; max_hop?: number;
   refs?: string[]; handoff?: HandoffView; review?: ReviewView;
@@ -225,7 +228,13 @@ export type HotView = {
   ttl_secs: number; stale_after_secs: number;
   total: number; stale: number; overdue: number; blocked: number; review: number; actionable: number;
   entries: HotEntryView[];
+  projects?: HotProjectView[];
   settle_path: string; note: string;
+};
+// 一个项目的热层汇总（全量，不受 entries 截断影响）。
+// total 只是「在办几件」，不是交付进度 —— 完成率仍没有真相源。
+export type HotProjectView = {
+  slug: string; total: number; blocked: number; review: number; overdue: number;
 };
 export type SettleReply = {
   ok?: boolean; id?: string; by?: string; status?: string;

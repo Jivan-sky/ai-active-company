@@ -342,6 +342,7 @@ IM 里发文件/图片 → gateway 捕获 → 落 inbox/pending/ + .meta.txt（�
 ### 4.5 纵切 A：真相源 → 渲染 → 部署
 
 - org 真相源 = **markdown + frontmatter**（公司 / 角色 / 成员 / 岗位），**只存岗位不存个人标识**（§2.5）。
+- 成员 persona 可选 `reports_to: <成员 name>`（**编号，不是显示名 / 岗位名**）。上级链只存一级，人名运行时派生；写错只记 warn、看板原样显示，不替人猜。
 - **全量生成，不打补丁**；手改生成物视为事故。生成物带指纹头做漂移检测。
 - **git 是发布总线**；生产机是 ff-only 自动拉取的副本。git **只放 org 真相**；本机路径与凭据**绝不写进 org 仓库**。
 - 常驻集（installer 生成）：gateway（KeepAlive）、inbox-watcher（KeepAlive sidecar）、vault-sync（15min ff-only pull）、ingest（每日兜底）、watchdog（30min）。

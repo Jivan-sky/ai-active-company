@@ -3,7 +3,7 @@ import { card, dash, el, section } from "../core/dom";
 import { hashQuery } from "../core/query";
 import { openMemberDrawer, openProjectDrawer } from "../org/drawers";
 import { domainSection, roleSection, routingSection } from "../org/sections";
-import { agentsForDomain, agentsForMember, agentsOf, botProject, botStateOf, domainLabel, memberAgentStats, memberTasks, periodState, roleTitle } from "../org/view";
+import { agentsForDomain, agentsForMember, agentsOf, botProject, botStateOf, domainLabel, hotProjectOf, memberAgentStats, memberTasks, periodState, roleTitle } from "../org/view";
 import { cannot, emptyNote, noBoard, statSection } from "../ui/blocks";
 
 // 组织 —— 读者：管理者 / FDE。组织长什么样、边界在哪。
@@ -140,7 +140,7 @@ export function renderMembers(d: Data): Kid[] {
       el("div", { class: "grid" },
         card("人 → Agent", "两把尺子", [["同岗位", "agent.role = 成员岗位"], ["同业务域", "agent.domain ∈ 成员业务域"]]),
         card("当前任务", "三个来源", [["热层", "进行中的 by / to 命中姓名"], ["时间线", "case 的 by / to 命中姓名"], ["待批", "队列里的 who / to 命中"]]),
-        card("没有的东西", "明确留白", [["上级", "org 还没有 reports_to 字段"], ["交付进度", "没有进度真相源"]]))),
+        card("没有的东西", "明确留白", [["交付进度", "没有进度真相源"]]))),
   ];
 }
 
@@ -149,6 +149,7 @@ export function renderMembers(d: Data): Kid[] {
 export function projectCard(d: Data, v: BoardView, p: ProjectRow): HTMLElement {
   const pct = periodState(p.period);
   const agents = agentsForDomain(v, p.domain);
+  const hot = hotProjectOf(d, p.slug);
   const recent = d.timeline?.wired ? d.timeline.cases.filter((c) => c.project === p.slug).length : -1;
   const node = el("article", {
     class: "entity-card project-card",
@@ -162,6 +163,9 @@ export function projectCard(d: Data, v: BoardView, p: ProjectRow): HTMLElement {
     el("div", { class: "ec-tags" },
       el("span", { class: "ec-tag" }, "负责人 " + dash(p.owner_label)),
       el("span", { class: "ec-tag" }, "周期 " + dash(p.period)),
+      ...(hot === null ? [] : [el("span", { class: "ec-tag" }, "在办 " + String(hot.total)
+        + (hot.blocked > 0 ? " · 卡住 " + String(hot.blocked) : "")
+        + (hot.overdue > 0 ? " · 超期 " + String(hot.overdue) : ""))]),
       ...(p.charter === "" ? [] : [el("span", { class: "ec-tag" }, "立项书副本")])),
     pct
       ? el("div", { class: "meter " + pct.cls },
@@ -191,6 +195,7 @@ export function renderProjects(d: Data): Kid[] {
     section("进度的口径", "两个数字不能混",
       el("div", { class: "grid" },
         card("周期时间消耗", "可推导", [["来源", "projects.md 的 period 原文"], ["算法", "起止日期之间消耗的比例"], ["含义", "只说明时间过去了多少"]]),
+        card("在办任务", "实时事实", [["来源", "热层的 task.project"], ["算法", "按项目名汇总，全量不受列表截断"], ["含义", "只说明还有几件没结，不是完成率"]]),
         card("交付进度", "未提供", [["来源", "没有机器可读的进度字段"], ["处理", "不画百分比、不拿时间冒充"], ["缺口", "见 #36 / SPEC §13 Q15"]]))),
   ];
 }

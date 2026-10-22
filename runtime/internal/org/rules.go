@@ -101,6 +101,8 @@ var DefaultRules = []Rule{
 	{"domain.who.unknown_role", LevelWarn, false, "who 不在 roles/ 里，渲染时解不出人，只会原样显示岗位名"},
 	{"domain.data.unknown_dir", LevelWarn, false, "data 不是 vault 顶层数据目录，作用域指不到地方"},
 	{"member.domains.unknown", LevelWarn, false, "成员写了未定义的域，多半是拼错 —— 等于悄悄少给他一块业务"},
+	{"member.reports_to.self", LevelWarn, false, "汇报链指向自己 —— 看板会显示成自己管自己，人事关系失真"},
+	{"member.reports_to.unknown", LevelWarn, false, "reports_to 不是成员 name —— 上级解不出人；显示名 / 岗位名都会落到这一档"},
 
 	// —— 项目表（立项书汇总）——
 	// 与域表同一档，理由也一样：立项书是别人写的、格式随公司/行业而变，ANC 只汇总不清点格式，

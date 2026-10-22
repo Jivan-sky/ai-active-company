@@ -193,3 +193,27 @@ func (o *Org) WhoLabel(role string) string {
 	}
 	return strings.Join(names, "、") + "（" + title + "）"
 }
+
+// MemberLabel 把成员编号解成「人名（岗位）」。
+//
+// 与 WhoLabel 的区别：WhoLabel 吃的是**岗位**（域表 who / 项目 owner），
+// MemberLabel 吃的是**成员 name**（persona 的 reports_to）。两处都只做派生，
+// 不在真相源里多存一份人名，免得改名后两处对不上。
+func (o *Org) MemberLabel(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	m, ok := o.Member(name)
+	if !ok {
+		return ""
+	}
+	label := strings.TrimSpace(m.DisplayName)
+	if label == "" {
+		label = m.Name
+	}
+	if r, ok := o.Roles[m.Role]; ok && strings.TrimSpace(r.Title) != "" {
+		label += "（" + strings.TrimSpace(r.Title) + "）"
+	}
+	return label
+}

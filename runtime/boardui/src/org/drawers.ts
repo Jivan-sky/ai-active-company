@@ -1,7 +1,7 @@
 import { dash, el } from "../core/dom";
 import { sinceText } from "../core/format";
 import type { AgentRow, BoardView, Data, DomainRow, Member, ProjectRow } from "../core/types";
-import { agentWork, agentsForDomain, agentsForMember, botProject, botStateOf, domainLabel, domainOf, flowBotOf, grantsFor, lastCall, liveAgentOf, memberAgentStats, memberProjects, memberTasks, periodState, roleTitle } from "./view";
+import { agentWork, agentsForDomain, agentsForMember, botProject, botStateOf, domainLabel, domainOf, flowBotOf, grantsFor, hotProjectOf, lastCall, liveAgentOf, memberAgentStats, memberProjects, memberTasks, periodState, roleTitle } from "./view";
 import { cannot, dcard, kv, sourceCell } from "../ui/blocks";
 import { openDrawer } from "../ui/drawer";
 import { bandDot } from "../ui/status";
@@ -15,6 +15,7 @@ export function openMemberDrawer(d: Data, v: BoardView, m: Member): void {
   const grants = grantsFor(d, refs);
   const bot = botStateOf(d, botProject(v, m.name));
   const doms = m.domains.map((x) => domainOf(v, x)).filter((x): x is DomainRow => x !== undefined);
+  const reportsTo = (m.reports_to ?? "").trim();
   openDrawer({
     eyebrow: "MEMBER / 成员与 Agent",
     title: dash(m.display_name || m.name),
@@ -98,7 +99,10 @@ export function openMemberDrawer(d: Data, v: BoardView, m: Member): void {
                 }))),
           dcard("汇报与指向", "NO FAKE HIERARCHY",
             kv([
-              ["上级", cannot("未提供 —— org 里还没有 reports_to 字段")],
+              ["上级", reportsTo === ""
+                ? cannot("未提供 —— persona 没写 reports_to")
+                : el("a", { href: "#/members?open=" + encodeURIComponent(reportsTo) },
+                    dash(m.reports_to_label || reportsTo))],
               ["相关项目", projects.length === 0 ? "—" : projects.map((p) => p.name).join("、") + "（推断）"],
               ["数据指向", doms.length === 0 ? "—" : doms.map((x) => dash(x.data)).join("、")],
             ])),
@@ -114,6 +118,7 @@ export function openMemberDrawer(d: Data, v: BoardView, m: Member): void {
 export function openProjectDrawer(d: Data, v: BoardView, p: ProjectRow): void {
   const pct = periodState(p.period);
   const agents = agentsForDomain(v, p.domain);
+  const hot = hotProjectOf(d, p.slug);
   const cases = d.timeline?.wired ? d.timeline.cases.filter((c) => c.project === p.slug) : [];
   const grants = grantsFor(d, agents.map((a) => a.slug));
   openDrawer({
@@ -141,6 +146,19 @@ export function openProjectDrawer(d: Data, v: BoardView, p: ProjectRow): void {
             el("p", { class: "dnote" }, "交付进度：", cannot("未提供 —— 项目表与立项书里没有机器可读的进度字段。"),
               " 这一条不能拿时间消耗冒充。"))),
         el("div", { class: "dg-col" },
+          dcard("在办任务", hot === null ? "热层未接" : String(hot.total) + " 件",
+            hot === null
+              ? el("p", { class: "empty" }, "热层没接上 —— 「读不到」不等于「没有在办的事」。")
+              : hot.total === 0
+                ? el("p", { class: "empty" }, "热层里没有挂在这个项目名下的事。")
+                : kv([
+                    ["在办", String(hot.total)],
+                    ["卡住", String(hot.blocked)],
+                    ["待验收", String(hot.review)],
+                    ["超期", String(hot.overdue)],
+                  ]),
+            hot === null ? "" : el("p", { class: "dnote" },
+              "按热层 task.project 汇总；已归档的事已经离开热层，所以这不是完成率，更不是交付进度。")),
           dcard("服务这个项目的 Agent", String(agents.length),
             agents.length === 0
               ? el("p", { class: "empty" }, "没有业务 agent 挂在这个业务域上。")

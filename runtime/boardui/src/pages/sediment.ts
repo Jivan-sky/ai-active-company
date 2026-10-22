@@ -89,7 +89,7 @@ export function sedimentSection(d: Data): Kid {
     return base + "（保鲜期 " + durText(h.ttl_secs) + " · 超过 " + durText(h.stale_after_secs) + " 没动就标不新鲜）";
   };
   const hotFoot = (): string => {
-    if (!h) return "热层那一格没问出来：" + (d.hotErr === "" ? "服务没回 anc.hot/v1" : d.hotErr) + "。";
+    if (!h) return "热层那一格没问出来：" + (d.hotErr === "" ? "服务没回 anc.hot/v2" : d.hotErr) + "。";
     if (!h.wired) return (h.why ?? "热层没接上") + "。所以那一格是「未接入」—— 它不等于「热层是空的」。";
     if ((h.error ?? "") !== "") return "热层接上了，但这会儿读不动：" + h.error + "。";
     return "热层那一格的数来自 /api/hot：现在 " + num(h.total) + " 条，其中 " + h.stale + " 条不新鲜。";

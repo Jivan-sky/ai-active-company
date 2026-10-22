@@ -17,9 +17,10 @@ import (
 
 // Schema 是这个视图的版本。**有消费方之后**，字段增删一律改它 —— 消费方据此判断能不能吃。
 //
-// v1 期间补齐了 projects / charter；v2 加了 agents（业务 agent 观测视图）。
-// 前端已经吃上 v2，再动字段就必须继续升版本号。
-const Schema = "anc.board/v2"
+// v1 期间补齐了 projects / charter；v2 加了 agents（业务 agent 观测视图）；
+// v3 加了成员 reports_to（上级，按成员编号存、看板派生成人名）。
+// 前端已经吃上 v3，再动字段就必须继续升版本号。
+const Schema = "anc.board/v3"
 
 // View 是看板的全部输入。字段**恒在**（不做 omitempty）：schema 稳定比省几个字节值钱。
 //
@@ -67,6 +68,11 @@ type Member struct {
 	Disabled    bool     `json:"disabled"`
 	Model       string   `json:"model"`
 	Domains     []string `json:"domains"`
+	// ReportsTo 是上级成员的 name（编号）；ReportsToLabel 是派生的「人名（岗位）」。
+	// 空串 = 没写。写了但解不出人时，Label 为空，前端原样显示 ReportsTo ——
+	// 不拿「—」把一条写错的汇报链抹平。
+	ReportsTo      string `json:"reports_to"`
+	ReportsToLabel string `json:"reports_to_label"`
 }
 
 // Domain 是域表一行。Who 是岗位，WhoLabel 是渲染时派生的「人名（岗位）」。
@@ -169,8 +175,10 @@ func Of(o *org.Org, now time.Time) *View {
 		v.Members = append(v.Members, Member{
 			Name: m.Name, DisplayName: m.DisplayName, Role: m.Role,
 			Admin: m.Admin, Disabled: m.Disabled,
-			Model:   o.ModelFor(m),
-			Domains: strList(m.Domains),
+			Model:          o.ModelFor(m),
+			Domains:        strList(m.Domains),
+			ReportsTo:      m.ReportsTo,
+			ReportsToLabel: o.MemberLabel(m.ReportsTo),
 		})
 	}
 	for _, d := range o.Domains {

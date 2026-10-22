@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"anc/internal/board"
 )
 
 // captureStdout 抓住一次调用的 stdout。
@@ -40,8 +42,8 @@ func TestOrgExportStdoutIsPureJSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &m); err != nil {
 		t.Fatalf("stdout 不是合法 JSON：%v\n%s", err, out)
 	}
-	if m["schema"] != "anc.board/v2" {
-		t.Fatalf("schema = %v，期望 anc.board/v2", m["schema"])
+	if m["schema"] != board.Schema {
+		t.Fatalf("schema = %v，期望 %s", m["schema"], board.Schema)
 	}
 }
 

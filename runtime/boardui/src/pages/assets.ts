@@ -169,7 +169,7 @@ export async function settleHot(
 export function renderHot(d: Data): Kid[] {
   const v = d.hot;
   if (!v) {
-    return [banner("bad", "读不到热层", [el("span", {}, d.hotErr === "" ? "服务没回 anc.hot/v1" : d.hotErr)])];
+    return [banner("bad", "读不到热层", [el("span", {}, d.hotErr === "" ? "服务没回 anc.hot/v2" : d.hotErr)])];
   }
   if (!v.wired) {
     return [banner("warn", "热层还没接上", [
@@ -212,6 +212,7 @@ export function renderHot(d: Data): Kid[] {
       el("dl", {},
         el("dt", {}, "状态"), el("dd", {}, dash(e.status)),
         el("dt", {}, "阶段"), el("dd", {}, dash(e.stage)),
+        el("dt", {}, "业务域 / 项目"), el("dd", {}, dash(e.domain) + " · " + dash(e.project)),
         el("dt", {}, "截止"), el("dd", {}, (e.due_at ?? "") === "" ? "没定" : dash(e.due_at) + (e.overdue ? " · 已超期 " + durText(e.overdue_secs ?? 0) : "")),
         el("dt", {}, "优先级"), el("dd", {}, dash(e.priority)),
         el("dt", {}, "谁 → 交给谁"), el("dd", {}, dash(e.by) + " → " + dash(e.to)),
@@ -224,6 +225,7 @@ export function renderHot(d: Data): Kid[] {
           ["id", el("span", { class: "mono" }, e.id)],
           ["状态", dash(e.status)],
           ["阶段", dash(e.stage) + " · 围栏 " + String(e.fence ?? "—") + " · 尝试 " + String(e.attempt ?? "—") + " / " + String(e.max_attempt ?? "—")],
+          ["业务域 / 项目", dash(e.domain) + " · " + dash(e.project)],
           ["派单 → 执行", dash(e.from) + " → " + dash(e.by)],
           ["下一手", dash(e.to)],
           ["截止 / 优先级", (e.due_at ?? "") === "" ? "没定 · " + dash(e.priority) : dash(e.due_at) + " · " + dash(e.priority)],

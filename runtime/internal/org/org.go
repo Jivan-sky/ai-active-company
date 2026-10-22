@@ -110,6 +110,9 @@ type Member struct {
 	Model       string
 	Admin       bool
 	Disabled    bool
+	// ReportsTo 是上级成员的 name（编号，不是显示名）。空 = 没写，不是「没有上级」。
+	// 只存一级：整棵汇报树在读取时现算，不在这里维护第二份结构。
+	ReportsTo string
 	// Unwired = 「这个 bot 还没接平台凭据」，是**声明**不是推断（探针第四档灰靠它）。
 	// 为什么要有：一个公司恰好要有一个启用中的 devbot（不可豁免），只接了部分腿的客户
 	// 必然有几个 bot 暂时没有真 app —— 少这一档，那几个会把运行态报告一路染黄。
@@ -509,6 +512,10 @@ func loadMembers(root string) ([]Member, error) {
 		if m.Disabled, err = d.Bool("disabled"); err != nil {
 			return nil, err
 		}
+		if m.ReportsTo, err = d.Str("reports_to"); err != nil {
+			return nil, err
+		}
+		m.ReportsTo = strings.TrimSpace(m.ReportsTo)
 		if m.Domains, err = d.StrList("domains"); err != nil {
 			return nil, err
 		}
@@ -549,6 +556,15 @@ func (o *Org) Member(name string) (Member, bool) {
 		}
 	}
 	return Member{}, false
+}
+
+// memberNames 给报错文案用（排序，保证同输入同输出）。
+func (o *Org) memberNames() []string {
+	out := make([]string, 0, len(o.Members))
+	for _, m := range o.Members {
+		out = append(out, m.Name)
+	}
+	return out
 }
 
 // AdminLabels 把 company.admins 解成「人名（岗位）」，供**给人看**的地方使用
@@ -669,6 +685,19 @@ func (o *Org) Validate(p *Policy) *Report {
 		for _, s := range append([]string{m.Feishu.OpenID}, append(m.Feishu.ExtraAllowFrom, m.Feishu.AllowChat...)...) {
 			if s == "*" {
 				rep.Add(p.Issue("feishu.wildcard", where, "allow_from / allow_chat 出现 \"*\"（等于对所有人开放，SPEC §6-1）"))
+			}
+		}
+		// 上级是人，不是岗位：这里只认 members/ 里的 name。写显示名 / 岗位名都算认不出，
+		// 因为同名的显示名可以被两个人共用，而汇报链必须指到唯一一个人身上。
+		// 放在角色检查之前：角色写错时，这条也要一起报出来（不让一个 continue 吞掉另一条）。
+		if m.ReportsTo != "" {
+			if m.ReportsTo == m.Name {
+				rep.Add(p.Issue("member.reports_to.self", where,
+					"reports_to=%q 指向自己 —— 汇报链没有起点，看板会显示成自己管自己", m.ReportsTo))
+			} else if _, ok := o.Member(m.ReportsTo); !ok {
+				rep.Add(p.Issue("member.reports_to.unknown", where,
+					"reports_to=%q 不是 members/ 里的成员 name（现有：%s）—— 看板会原样显示这个编号，但解不出人",
+					m.ReportsTo, strings.Join(o.memberNames(), " / ")))
 			}
 		}
 		// 角色相关检查放最后：角色不存在时，成员自身的问题也要一并报出来。

@@ -1,5 +1,5 @@
 import { dash } from "../core/dom";
-import type { AgentRow, AuditEntryView, BoardView, Data, DataflowBot, DomainRow, LiveAgent, Member, ProjectRow } from "../core/types";
+import type { AgentRow, AuditEntryView, BoardView, Data, DataflowBot, DomainRow, HotProjectView, LiveAgent, Member, ProjectRow } from "../core/types";
 import { runState } from "../ui/status";
 
 //
@@ -111,6 +111,15 @@ export function botStateOf(d: Data, project: string): { cls: string; label: stri
   if (!hit) return { cls: "dot", label: "未观测到" };
   const st = runState(hit.state);
   return { cls: st.dot, label: st.label };
+}
+
+// 一个项目的热层汇总。null = 热层没接上 / 读不动 —— 不拿 0 冒充「没有在办的事」。
+// 这是**在办任务数**，不是交付进度：已归档的事已经离开热层，算不出完成率。
+export function hotProjectOf(d: Data, slug: string): HotProjectView | null {
+  if (!d.hot?.wired || (d.hot.error ?? "") !== "") return null;
+  // 老服务（v1）没有 projects 这一格：那是「问不出来」，不是「0 件在办」。
+  if (!Array.isArray(d.hot.projects)) return null;
+  return d.hot.projects.find((p) => p.slug === slug) ?? { slug, total: 0, blocked: 0, review: 0, overdue: 0 };
 }
 
 export type TaskLine = { title: string; status: string; band: string; at: string; href: string; source: string };

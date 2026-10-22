@@ -81,6 +81,29 @@ func TestMemberModelIsResolved(t *testing.T) {
 	}
 }
 
+// 上级按成员编号存，看板派生成「人名（岗位）」；没写就是空串，不猜。
+func TestMemberReportsToIsProjected(t *testing.T) {
+	v := Of(boardOrg(t, "domains"), fixedNow)
+	var bob, alice *Member
+	for i := range v.Members {
+		switch v.Members[i].Name {
+		case "bob":
+			bob = &v.Members[i]
+		case "alice":
+			alice = &v.Members[i]
+		}
+	}
+	if bob == nil || alice == nil {
+		t.Fatalf("测试数据缺 bob / alice：%+v", v.Members)
+	}
+	if bob.ReportsTo != "alice" || bob.ReportsToLabel != "Alice Wang（经理）" {
+		t.Fatalf("bob 的上级投影不对：%+v", bob)
+	}
+	if alice.ReportsTo != "" || alice.ReportsToLabel != "" {
+		t.Fatalf("没写 reports_to 的成员应保持空串：%+v", alice)
+	}
+}
+
 // 项目表进投影：owner 岗位派生成人名（与 persona / 域表同一处口径），period 原文照搬 ——
 // ANC 不解读周期，看板也不该解读。
 func TestViewProjectsProjected(t *testing.T) {

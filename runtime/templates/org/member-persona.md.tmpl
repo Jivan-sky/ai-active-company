@@ -2,6 +2,8 @@
 name: {{MEMBER_NAME}}
 display_name: {{MEMBER_DISPLAY}}
 role: {{MEMBER_ROLE}}
+# 可选：上级的成员 name（不是显示名、不是岗位名）。不写就是「没提供」，看板不会猜。
+# reports_to: someone
 feishu:
   # 占位符：必须换成真实的飞书应用与用户标识，否则 bot 连不上、也认不出谁在跟它说话
   app_id: {{APP_ID}}

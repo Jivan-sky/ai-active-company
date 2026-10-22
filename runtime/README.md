@@ -359,7 +359,7 @@ anc board serve <vault> [--addr 127.0.0.1:8787] [--data <data 目录>] [--hot-ad
   按视角筛、但不改写）、工作上下文（`anc.context/v1`，装配点的只读出口）、校验发现（与 `anc org check`
   同一张规则表）、运行态（`anc.runtime/v1`，读 gateway 的 data 目录）、数据流（`anc.dataflow/v1`）、
   原料（`anc.assets/v1`）、决策与执行留存（`anc.timeline/v1`）、行使的流水（`anc.audit/v1`）、
-  待批队列（`anc.approvals/v1`，在读的是**热层**、不是真相源）、热层探针（`anc.hot/v1`）。
+  待批队列（`anc.approvals/v1`，在读的是**热层**、不是真相源）、热层探针（`anc.hot/v2`）。
   **各判各的**：一份坏了不该让别的页跟着空着。看板不自己算口径，也不另存一份 —— 免得看板和 persona 各说各话。
 - **数据流页只说执行面与策略面**：通道口径读的是 gateway **真吃着**的那份 `config.toml`
    （「我们打算让它吃什么」不算数）；有没有越权尝试属于**事件面** —— 那在**审计页**，本页只答策略面与执行面。

@@ -62,8 +62,8 @@ func TestHotCountsAndMarksStale(t *testing.T) {
 	old := now.Add(-30 * time.Hour)
 	f := &fakeHot{ttl: 0, list: []hot.State{
 		{ID: "t-old", Status: "running", Title: "很久没动的一件", AsOf: old.Format(time.RFC3339)},
-		{ID: "t-fresh", Status: "running", Title: "刚发生的一件", AsOf: fresh.Format(time.RFC3339)},
-		{ID: "t-nodate", Status: "blocked", Title: "没写「这是什么时候的」"},
+		{ID: "t-fresh", Status: "running", Title: "刚发生的一件", Domain: "trade", Project: "trade-q3", AsOf: fresh.Format(time.RFC3339)},
+		{ID: "t-nodate", Status: "blocked", Stage: hot.StageBlocked, Title: "没写「这是什么时候的」", Project: "trade-q3"},
 	}}
 	v, body := hotOf(t, &Server{Hot: f, Now: func() time.Time { return now }})
 	if !v.Wired {
@@ -88,6 +88,13 @@ func TestHotCountsAndMarksStale(t *testing.T) {
 	if v.Entries[0].AgeSecs == nil || *v.Entries[0].AgeSecs != int64((2*time.Hour)/time.Second) {
 		t.Fatalf("age_secs 该是 7200，实际 %v", v.Entries[0].AgeSecs)
 	}
+	// 项目页要用它回答「这一摊还有哪些事在办」—— 投影漏了这两格，前端就只能猜。
+	if v.Entries[0].Domain != "trade" || v.Entries[0].Project != "trade-q3" {
+		t.Fatalf("domain / project 没带出来：%+v", v.Entries[0])
+	}
+	if len(v.Projects) != 1 || v.Projects[0].Slug != "trade-q3" || v.Projects[0].Total != 2 || v.Projects[0].Blocked != 1 {
+		t.Fatalf("按项目汇总不对：%+v", v.Projects)
+	}
 	// 没写时间的条目沉在最后，且**不出 age_secs 这个键**（出个 0 会读成「刚发生」）：
 	last := v.Entries[len(v.Entries)-1]
 	if last.ID != "t-nodate" {
@@ -95,6 +102,26 @@ func TestHotCountsAndMarksStale(t *testing.T) {
 	}
 	if last.AgeSecs != nil {
 		t.Fatalf("没写时间的条目不该有 age_secs，实际 %d", *last.AgeSecs)
+	}
+}
+
+// 条目列表会截断（hotKeep），但项目汇总是**全量**的：
+// 项目页要回答「这一摊还有几件在办」，拿被截断的 entries 去数会少报。
+func TestHotProjectCountsIgnoreEntryTruncation(t *testing.T) {
+	now := time.Date(2026, 10, 12, 10, 0, 0, 0, time.UTC)
+	list := make([]hot.State, 0, hotKeep+5)
+	for i := 0; i < hotKeep+5; i++ {
+		list = append(list, hot.State{
+			ID: "t-" + time.Duration(i).String(), Status: "running", Title: "在办",
+			Project: "trade-q3", AsOf: now.Add(-time.Duration(i) * time.Minute).Format(time.RFC3339),
+		})
+	}
+	v, _ := hotOf(t, &Server{Hot: &fakeHot{list: list}, Now: func() time.Time { return now }})
+	if len(v.Entries) != hotKeep {
+		t.Fatalf("条目列表应截到 %d 条，实际 %d", hotKeep, len(v.Entries))
+	}
+	if len(v.Projects) != 1 || v.Projects[0].Total != hotKeep+5 {
+		t.Fatalf("项目汇总不许跟着截断：%+v", v.Projects)
 	}
 }
 

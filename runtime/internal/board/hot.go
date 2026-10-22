@@ -9,7 +9,9 @@ import (
 )
 
 // HotSchema 是这一份视图的版本号（同 /api/assets 的理由）。
-const HotSchema = "anc.hot/v1"
+// v2 起条目带上 domain / project —— 没有它们，项目页只能看到「有任务」，
+// 看不出「是哪一摊的」。
+const HotSchema = "anc.hot/v2"
 
 // hotKeep 是最多回显几条条目 —— 看板要的是「这一层现在什么情况」，
 // 不是把整个队列搬进浏览器。总数照报 Total，不因为截断就装作只有这些。
@@ -32,6 +34,8 @@ type HotEntryView struct {
 	ID            string       `json:"id"`
 	Status        string       `json:"status"`
 	Stage         string       `json:"stage,omitempty"`
+	Domain        string       `json:"domain,omitempty"`
+	Project       string       `json:"project,omitempty"`
 	Fence         int64        `json:"fence,omitempty"`
 	Attempt       int          `json:"attempt,omitempty"`
 	MaxAttempt    int          `json:"max_attempt,omitempty"`
@@ -61,7 +65,7 @@ type HotEntryView struct {
 	Stale         bool         `json:"stale"`
 }
 
-// HotView 是 `/api/hot` 的形状（schema = anc.hot/v1）—— 「热层里现在住着什么」。
+// HotView 是 `/api/hot` 的形状（schema = anc.hot/v2）—— 「热层里现在住着什么」。
 //
 // 三条与其它视图一致的规矩：
 //   - 热层接不上就如实回 wired=false + why —— **「读不到」和「里面是空的」是两件事**，
@@ -82,9 +86,22 @@ type HotView struct {
 	Review         int            `json:"review"`
 	Actionable     int            `json:"actionable"`
 	Entries        []HotEntryView `json:"entries"`
+	// Projects 按项目汇总**全量**热层条目（不受 hotKeep 截断影响）。
+	// 项目页要回答「这一摊还有几件在办」，不能拿被截断的 entries 去数 —— 那会少报。
+	Projects []HotProjectView `json:"projects"`
 	// SettlePath 是「归档往哪发」—— 与审批同一口径：由服务端给，前端不另写一份常量。
 	SettlePath string `json:"settle_path"`
 	Note       string `json:"note"`
+}
+
+// HotProjectView 是一个项目的热层汇总。只数事实，不算完成率：
+// 「做了几件」不等于「交付到哪」，后者仍没有真相源。
+type HotProjectView struct {
+	Slug    string `json:"slug"`
+	Total   int    `json:"total"`
+	Blocked int    `json:"blocked"`
+	Review  int    `json:"review"`
+	Overdue int    `json:"overdue"`
 }
 
 // hotRow 是排序用的一行：视图 + 「这条有没有写时间」。
@@ -96,7 +113,7 @@ type hotRow struct {
 // handleHot 读一遍热层。读不动**不拦看板**：看不到热层不等于真相源坏了，别的页照样该看得到。
 func (s *Server) handleHot(w http.ResponseWriter, r *http.Request) {
 	view := HotView{
-		Schema: HotSchema, Entries: []HotEntryView{},
+		Schema: HotSchema, Entries: []HotEntryView{}, Projects: []HotProjectView{},
 		SettlePath:     SettlePath,
 		StaleAfterSecs: int64(hot.DefaultStale / time.Second),
 		Note: "热层是「还在发生的事」待的地方：带保鲜期，到期自己走 —— 所以它便宜。" +
@@ -119,9 +136,22 @@ func (s *Server) handleHot(w http.ResponseWriter, r *http.Request) {
 	view.Total = len(list)
 	rows := make([]hotRow, 0, len(list))
 	actionable := map[string]bool{}
+	projectCounts := map[string]*HotProjectView{}
+	projectOf := func(slug string) *HotProjectView {
+		if slug == "" {
+			return nil
+		}
+		p := projectCounts[slug]
+		if p == nil {
+			p = &HotProjectView{Slug: slug}
+			projectCounts[slug] = p
+		}
+		return p
+	}
 	for _, st := range list {
 		e := HotEntryView{
 			ID: st.ID, Status: st.Status, Stage: st.Stage, Fence: st.Fence,
+			Domain: st.Domain, Project: st.Project,
 			Attempt: st.Attempt, MaxAttempt: st.MaxAttempt, Title: st.Title, By: st.By, From: st.From, To: st.To,
 			Root: st.Root, Parent: st.Parent, Accept: st.Accept, DueAt: st.DueAt, Priority: st.Priority,
 			Hop: st.Hop, MaxHop: st.MaxHop, Refs: st.Refs,
@@ -129,6 +159,18 @@ func (s *Server) handleHot(w http.ResponseWriter, r *http.Request) {
 			LeaseTo: st.LeaseTo, LeaseNoExpiry: st.LeaseNoExpiry,
 		}
 		e.Overdue = st.Overdue(now)
+		if p := projectOf(st.Project); p != nil {
+			p.Total++
+			if e.Overdue {
+				p.Overdue++
+			}
+			if st.Stage == hot.StageBlocked {
+				p.Blocked++
+			}
+			if st.Stage == hot.StageReview && st.Review.Verdict == hot.VerdictPending {
+				p.Review++
+			}
+		}
 		if d, ok := st.OverdueFor(now); ok {
 			secs := int64(d / time.Second)
 			e.OverdueSecs = &secs
@@ -166,6 +208,10 @@ func (s *Server) handleHot(w http.ResponseWriter, r *http.Request) {
 		rows = append(rows, hotRow{e: e, hasTime: ok})
 	}
 	view.Actionable = len(actionable)
+	for _, p := range projectCounts {
+		view.Projects = append(view.Projects, *p)
+	}
+	sort.Slice(view.Projects, func(i, j int) bool { return view.Projects[i].Slug < view.Projects[j].Slug })
 	// 有时间的排前面，其中最新的在前；**没时间的沉到最后**（它没有「多新」可比）；
 	// 同一时刻按 id 排 —— 同一份现场两次刷新要逐字节相同。
 	sort.SliceStable(rows, func(i, j int) bool {

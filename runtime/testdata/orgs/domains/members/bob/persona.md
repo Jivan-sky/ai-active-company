@@ -2,6 +2,7 @@
 name: bob
 display_name: Bob Li
 role: ops
+reports_to: alice
 domains: [logistics]
 feishu:
   app_id: cli_demo_bob

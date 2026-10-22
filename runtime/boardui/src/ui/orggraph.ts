@@ -86,6 +86,7 @@ export function mountOrgGraph(scope: HTMLElement, d: Data): void {
       projectIndex.set(x.slug, idx);
       edges.push({ a: domainIndex.get(x.domain) ?? 0, b: idx, color: light ? "104,96,178" : "195,188,242", seed: (i * 0.13 + 0.3) % 1 });
     });
+    const memberIndex = new Map<string, number>();
     b.members.forEach((x, i) => {
       const dom = x.domains.find((s) => domainIndex.has(s));
       const host = nodes[domainIndex.get(dom ?? "") ?? 0]!;
@@ -95,9 +96,20 @@ export function mountOrgGraph(scope: HTMLElement, d: Data): void {
       nodes.push({
         x: Math.cos(a) * W * rad, y: Math.sin(a) * H * rad, r: 3.8, color: light ? "42,132,108" : "172,224,207", kind: "member",
         label: x.display_name || x.name, sub: x.role + (x.disabled ? " · 已停用" : ""),
-        facts: [["角色", x.role], ["模型", x.model], ["业务域", x.domains.join("、") || "—"], ["状态", x.disabled ? "已停用" : x.admin ? "启用 · 管理员" : "启用"]],
+        facts: [["角色", x.role], ["模型", x.model], ["业务域", x.domains.join("、") || "—"],
+          ["上级", (x.reports_to ?? "") === "" ? "未提供" : (x.reports_to_label || x.reports_to || "—")],
+          ["状态", x.disabled ? "已停用" : x.admin ? "启用 · 管理员" : "启用"]],
       });
+      memberIndex.set(x.name, idx);
       edges.push({ a: domainIndex.get(dom ?? "") ?? 0, b: idx, color: light ? "42,132,108" : "172,224,207", seed: (i * 0.11 + 0.6) % 1 });
+    });
+    // 汇报线单独一种颜色：它和「挂在哪个域」不是同一种关系，混成一个颜色会被读错。
+    // 目标解不出（写错编号）就**不画** —— 图上不补一条猜出来的线，错误已在 org check 里报过。
+    b.members.forEach((x, i) => {
+      const a = memberIndex.get(x.name);
+      const target = memberIndex.get(x.reports_to ?? "");
+      if (a === undefined || target === undefined || a === target) return;
+      edges.push({ a, b: target, color: light ? "158,118,38" : "230,207,152", seed: (i * 0.07 + 0.45) % 1 });
     });
     agentsOf(b).forEach((x, i) => {
       const dom = domainIndex.has(x.domain) ? x.domain : "";
