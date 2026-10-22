@@ -22,6 +22,9 @@ export function grantsQuery(): string {
 // 与上下文页同一条纪律：问题 / 视角进 URL，刷新、前进后退、把链接发给别人都还停在同一次检索。
 export function searchQuery(): string {
   const q = hashQuery();
+  // 没有查询词就不发请求：视角 / 域只有在有 q 时才有意义，否则只会换来一条
+  // 「q 为空」的假错误，还会白白建一次全库索引。
+  if ((q.get("q") ?? "").trim() === "") return "";
   const p = new URLSearchParams();
   for (const key of ["q", "who", "domain"]) {
     const v = (q.get(key) ?? "").trim();
