@@ -70,6 +70,37 @@ func TestResolveViewerAdminFromCompany(t *testing.T) {
 	}
 }
 
+// 编号入口与 open_id 入口必须给出同一份判定 —— 检索 / CLI 用编号，登录用 open_id。
+func TestResolveMemberViewerMatchesOpenIDViewer(t *testing.T) {
+	o, err := Load(fixture(t, "domains"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"alice", "bob"} {
+		m, ok := o.Member(name)
+		if !ok {
+			t.Fatalf("夹具里没有 %s", name)
+		}
+		byID, ok := o.ResolveViewer(m.Feishu.OpenID)
+		if !ok {
+			t.Fatalf("%s 的 open_id 解不出来", name)
+		}
+		byName, ok := o.ResolveMemberViewer(name)
+		if !ok {
+			t.Fatalf("%s 的编号解不出来", name)
+		}
+		if byID.Admin != byName.Admin || byID.AllDomains != byName.AllDomains {
+			t.Fatalf("%s 两处判定不一致：open_id=%+v 编号=%+v", name, byID, byName)
+		}
+		if strings.Join(byID.Domains, ",") != strings.Join(byName.Domains, ",") {
+			t.Fatalf("%s 的域集合不一致：%v vs %v", name, byID.Domains, byName.Domains)
+		}
+	}
+	if _, ok := o.ResolveMemberViewer("ghost"); ok {
+		t.Fatal("不存在的编号不该解出访问者")
+	}
+}
+
 func TestResolveViewerCrossDomainDefaultVisible(t *testing.T) {
 	o, err := Load(fixture(t, "domains"))
 	if err != nil {

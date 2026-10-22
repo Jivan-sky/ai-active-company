@@ -195,6 +195,8 @@ harness（Claude Code / Codex / …）通过 MCP 调工具。桥的两半都在�
 
   入站（agent 递给 ANC）  anc_send_envelope(who, on_behalf_of?, kind?, body, scope_domain?, scope_project?, refs?, needs?)
   出站（agent 向 ANC 要）  anc_read_context(who, on_behalf_of?, domain?)
+  检索（agent 找知识）    anc_search(who, q, domain?, limit?)
+  取正文（按指针读）      anc_get(who, path)
   心跳（agent 报在线）    anc_agent_heartbeat(who, status?, task_id?, note?)
   任务（pull 模型）       anc_task(action=enqueue|pull|ack|list|settle)
   会话（只记录归属）      anc_session(action=get|rotate, who)
@@ -328,6 +330,38 @@ func (g *envelopeIngress) srv() *mcp.Server {
 				"required": []string{"who"},
 			},
 			Call: g.readContext,
+		}, {
+			Name: "anc_search",
+			Description: "在 vault 的知识里找（**只读**）：回指针 + 片段，不回整篇正文；取正文用 path 读文件。" +
+				"who 必须是 vault 里真实存在的成员名或业务 agent 的 slug —— 可见范围按 org 算：" +
+				"成员看自己的域（跨域口径由 company.md 的 access.cross_domain 定），" +
+				"业务 agent 只看 agents.md 的 domain。" +
+				"查不到就如实说没命中，**不要按训练记忆补**（诚实条款）。",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"who":    map[string]any{"type": "string", "description": "你是谁（成员名 / agents.md 的 slug）"},
+					"q":      map[string]any{"type": "string", "description": "要查什么（中文 / 英文都行）"},
+					"domain": map[string]any{"type": "string", "description": "可选：只问这一块业务（domains.md 的 slug）"},
+					"limit":  map[string]any{"type": "integer", "description": "可选：返回几条（默认 8，上限 50）"},
+				},
+				"required": []string{"who", "q"},
+			},
+			Call: g.searchKnowledge,
+		}, {
+			Name: "anc_get",
+			Description: "按 anc_search 回话里的 path 取正文（**只读**）。" +
+				"path 必须来自索引、且在 who 的可见范围内 —— 看不见就拒，不给半篇冒充全文。" +
+				"超过 64 KiB 会显式截断（truncated=true + total_bytes），完整正文回 vault 里看。",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"who":  map[string]any{"type": "string", "description": "你是谁（成员名 / agents.md 的 slug）"},
+					"path": map[string]any{"type": "string", "description": "anc_search 回话里的 path（vault 相对路径）"},
+				},
+				"required": []string{"who", "path"},
+			},
+			Call: g.getDocument,
 		}, {
 			Name: "anc_agent_heartbeat",
 			Description: "业务 agent 报一次心跳（**写当前态**，不是历史）：谁还在线、现在在干什么。" +

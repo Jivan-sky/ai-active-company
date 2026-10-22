@@ -143,6 +143,8 @@ func main() {
 		os.Exit(cmdGateway(args))
 	case "context":
 		os.Exit(cmdContext(args))
+	case "search":
+		os.Exit(cmdSearch(args))
 	case "ingest":
 		os.Exit(cmdIngest(args))
 	case "import":
@@ -230,6 +232,8 @@ func usage() {
                                     一个 agent 的工作上下文（只读投影：身份 / 业务域 / 数据源 / 可见范围 / 技能 / 项目）
   anc context freeze <vault> --who <编号> [--domain <slug>] [--to <目录>]
                                     把这一份冻成副本落 vault 的 context/（快照；给交付与审计取证）
+  anc search <vault> --q "要查什么" [--who <编号>] [--domain <slug>] [--limit 8]
+                                    按域可见范围搜知识（默认 BM25；给指针 + 片段，查不到就说没入库）
   anc version
 
 三层客户（九宫格判层，先判层再定打法，答错层＝后面全错）：

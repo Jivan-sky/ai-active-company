@@ -68,13 +68,29 @@ func (o *Org) ResolveViewer(openID string) (Viewer, bool) {
 	if !ok || m.Disabled {
 		return Viewer{}, false
 	}
+	return o.viewerOf(m), true
+}
+
+// ResolveMemberViewer 按**成员编号**解访问者（CLI / MCP 的 who 入口用）。
+//
+// 与 ResolveViewer 共用同一个判定函数：入口不同（编号 / open_id），答案必须一样 ——
+// 「命令行说他是管理员、检索说不是」这种漂移，比没有权限判定更坏。
+func (o *Org) ResolveMemberViewer(name string) (Viewer, bool) {
+	m, ok := o.Member(name)
+	if !ok || m.Disabled {
+		return Viewer{}, false
+	}
+	return o.viewerOf(m), true
+}
+
+func (o *Org) viewerOf(m Member) Viewer {
 	v := Viewer{
 		Member:  m,
 		Domains: append([]string(nil), m.Domains...),
 		Admin:   m.Admin || o.isAdminName(m.Name),
 	}
 	v.AllDomains = v.Admin || o.Company.Access.CrossDomainVisible()
-	return v, true
+	return v
 }
 
 // memberByOpenID 是「open_id → 人」的唯一实现。

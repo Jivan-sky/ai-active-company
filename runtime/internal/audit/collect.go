@@ -67,10 +67,17 @@ func BuiltinTools() []ToolRule {
 		// openclaw 是 anc__anc_xxx、codex 是光秃秃的 anc_xxx —— 名字里带不带
 		// 命名空间前缀是那一家的事，归集只认记录里写的是什么，所以三个都登记。
 		{Tool: "anc_read_context", Action: ActionRead, Target: []string{"who"}},
+		// 检索也是一次「读」：客体优先取 domain（问哪块业务），没写就取 q（问什么）。
+		{Tool: "anc_search", Action: ActionRead, Target: []string{"domain", "q"}},
+		{Tool: "anc_get", Action: ActionRead, Target: []string{"path"}},
 		{Tool: "anc_send_envelope", Action: ActionWrite, Target: []string{"who"}},
 		{Tool: "mcp__anc__anc_read_context", Action: ActionRead, Target: []string{"who"}},
+		{Tool: "mcp__anc__anc_search", Action: ActionRead, Target: []string{"domain", "q"}},
+		{Tool: "mcp__anc__anc_get", Action: ActionRead, Target: []string{"path"}},
 		{Tool: "mcp__anc__anc_send_envelope", Action: ActionWrite, Target: []string{"who"}},
 		{Tool: "anc__anc_read_context", Action: ActionRead, Target: []string{"who"}},
+		{Tool: "anc__anc_search", Action: ActionRead, Target: []string{"domain", "q"}},
+		{Tool: "anc__anc_get", Action: ActionRead, Target: []string{"path"}},
 		{Tool: "anc__anc_send_envelope", Action: ActionWrite, Target: []string{"who"}},
 
 		// ---- OpenClaw（同一批实测；工具名带 MCP 命名空间前缀时原样搬）----

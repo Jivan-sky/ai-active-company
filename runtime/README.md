@@ -671,6 +671,8 @@ harness 通过 **MCP（streamable HTTP）** 调工具。**桥的两半挂在同�
 ```
 anc_send_envelope(who, on_behalf_of?, kind?, body, scope_domain?, scope_project?, refs?, needs?)   # 递进来
 anc_read_context(who, on_behalf_of?, domain?)                                                      # 要出去（只读）
+anc_search(who, q, domain?, limit?)                                                                # 找知识（只读）
+anc_get(who, path)                                                                                 # 按指针取正文（只读）
 ```
 
 `anc_read_context` 是 **W2 的出站读出口**（2026-10-09）：问「这块业务是什么 / 数据在哪 / 卡住找谁 /
@@ -760,6 +762,31 @@ anc context freeze <vault> --who <编号> [--domain <slug>] [--to <目录>]
 - 退出码：`0` 答出来了 / 冻上了 · `1` 拒了（这个人不存在 / 越域 / 署名解不出）或真相源读不了 · `2` 用法错。
 - 设计记录见 `DESIGN.md` §7.1.47（包）· §7.1.48（看板的「上下文」页 + 冻结副本）· §7.1.49（捎上「派给我的待办」）·
   §7.1.55（bot 侧的授权视图）· §7.1.56（`to` / `by` 的身份尺子与报缺）。
+
+### 知识检索（`anc search` / `anc_search`）
+
+```
+anc search <vault> --q "要查什么" [--who <编号>] [--domain <slug>] [--roots a,b] [--limit 8] [--json]
+anc search <vault> --get <vault 相对路径> [--who <编号>]
+```
+
+**默认件是本地 BM25**（2026-10-22，D13）：零第三方依赖、索引每次从 markdown 重建，
+**索引不是真相源** —— 删掉不影响答案。数据量大到文件 + grep 撑不住时，才按 SPEC §4.2
+切自托管检索层（WeKnora 那类）；切换点只在 `internal/retrieval` 的后端接口，权限判定不跟着换。
+
+- **权限只认 org**：成员看自己的 `domains`；`company.admins` / `admin: true` 或
+  `access.cross_domain: visible` 看全部；业务 agent 只看 `agents.md` 的 `domain`。
+  公司级资料（frontmatter 显式写空 `domain:`）谁都能看 —— 同 `Viewer.CanSeeDomain("")`。
+- **先过滤、再打分、后截断**：看不见的文档不参与 df、不占 `limit`、不计入 `count` ——
+  不能先打分再过滤，否则「命中几条」会变成侧信道。
+- **域从哪来**：frontmatter 的 `domain:` 优先；没写就看路径顶层目录 → `domains.md` 的 `data` 列。
+  出厂索引面 = `10-knowledge` / `knowledge` + 各域 `data` 目录（只收存在的目录；不含 `00-inbox` 与 `_originals`）。
+- **回指针与片段，不回整篇结论**：CLI `--get` / MCP `anc_get` 才取正文，且只认索引里、且可见的路径
+  （目录穿越没有入口）。MCP 取正文超过 64 KiB 会显式截断（`truncated=true` + `total_bytes`），
+  不静默给半篇冒充全文。查不到就明说「没入库」，不按训练记忆补。
+- **每次 MCP 调用留一条痕进 `audit/`**（`tool=anc_search`，谁 / 问什么 / 给没给 / 为什么拒）；
+  CLI 这条是本机操作者的投影，性质同 `anc org export`。
+- 退出码：`0` 有结果 / 取到了 · `1` 拒了（身份不存在 / 越域 / 取不到）或真相源读不了 · `2` 用法错。
 
 **接法（不变量）已定形**（2026-10-09）：`../SPEC.md` **§4.7** —— 网关 **G1–G4** + 四条禁令、
 harness **H1–H4**、业务 agent 独立账号的五件套。判据一句话：**换一个网关、加一条 harness 腿，

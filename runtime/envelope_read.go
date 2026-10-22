@@ -86,6 +86,12 @@ func (g *envelopeIngress) tasks() ctxpack.TasksIn {
 // 留痕失败**不改回话**：读出口的职责是答问题，不是把审计故障变成对 harness 的报错。
 // 但要在 stderr 吼一声 —— 静默丢一条痕，等于审计少一次行使。
 func (g *envelopeIngress) auditRead(actor, domain, result, why string, at time.Time) {
+	g.auditTool("anc_read_context", actor, domain, result, why, at)
+}
+
+// auditTool 给任意出站调用留一条痕（读上下文 / 检索共用这一份落点）。
+// 工具名是 data 的一部分 —— 审计要能分开「他读了上下文」和「他搜了知识」。
+func (g *envelopeIngress) auditTool(tool, actor, object, result, why string, at time.Time) {
 	if actor == "" {
 		actor = "unknown"
 	}
@@ -94,10 +100,10 @@ func (g *envelopeIngress) auditRead(actor, domain, result, why string, at time.T
 		At:     at.Format(time.RFC3339),
 		Actor:  actor,
 		Action: audit.ActionRead,
-		Object: domain,
+		Object: object,
 		Result: result,
 		Why:    why,
-		Tool:   "anc_read_context",
+		Tool:   tool,
 		Source: "serve",
 	}
 	if _, err := audit.Append(g.Vault, rec); err != nil {
