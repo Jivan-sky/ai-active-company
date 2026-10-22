@@ -78,7 +78,7 @@ function hitCard(h: SearchHit): HTMLElement {
 
 function resultSection(v: SearchView): Kid {
   const out: Kid[] = [];
-  out.push(section("结果", "先按可见域过滤，再打分、后截断 —— 看不见的文档不参与分数，也不计入命中", 
+  out.push(section("结果", "先按可见域过滤，再打分、后截断 —— 看不见的文档不参与分数，也不计入命中",
     el("div", { class: "figs" },
       statCard(String(v.indexed), "索引", "从 markdown 重建"),
       statCard(String(v.visible), "可见", "当前视角"),
@@ -103,7 +103,7 @@ function resultSection(v: SearchView): Kid {
     out.push(section("命中", "每一条都指回 vault 相对路径；正文要靠 anc_get / CLI --get 取",
       el("div", { class: "search-results" }, ...v.hits.map(hitCard))));
   }
-  out.push(section("这一页的边界", "少一点聪明，多一点可核", 
+  out.push(section("这一页的边界", "少一点聪明，多一点可核",
     el("p", { class: "empty" }, dash(v.note),
       el("br"),
       "索引不是真相源；删掉索引不影响答案。权限只认 org：成员看自己的域，管理员 / 跨域可见口径按 company.md，业务 agent 只看 agents.md 的 domain。")));
